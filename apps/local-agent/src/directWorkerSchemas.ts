@@ -41,6 +41,8 @@ export const runClaudePromptInputSchema = z.object({
   permissionMode: nullableStringSchema,
   model: nullableStringSchema,
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullable().optional(),
+  settings: nullableStringSchema,
+  persistentSession: z.boolean().nullable().optional(),
 }).passthrough();
 
 const directWorkerRequestBase = {

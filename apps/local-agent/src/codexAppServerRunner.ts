@@ -633,8 +633,14 @@ async function startAppServer(input: RunCodexAppServerPromptInput, transport: Ap
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  child.stdout.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  const appendServerLog = (chunk: Buffer) => {
+    stderrChunks.push(chunk);
+    if (stderrChunks.length > 256) {
+      stderrChunks.splice(0, stderrChunks.length - 256);
+    }
+  };
+  child.stdout.on("data", appendServerLog);
+  child.stderr.on("data", appendServerLog);
 
   const spawnError = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
     child.once("error", (error) => resolve(error as NodeJS.ErrnoException));
@@ -704,6 +710,135 @@ export async function terminateManagedAppServer(
   }
 
   await waitForChildExit(child, forceTimeoutMs);
+}
+
+// ---------------------------------------------------------------------------
+// Persistent managed app-server pool
+//
+// One `codex app-server` process is kept per (codex command, CODEX_HOME) and
+// shared by every prompt instead of booting and killing a server per Discord
+// message. The server multiplexes threads, so concurrent jobs simply open
+// their own WebSocket connections against the same process.
+// ---------------------------------------------------------------------------
+
+interface PersistentCodexAppServer {
+  key: string;
+  child: ChildProcess;
+  clientUrl: string;
+  tempRoot: string | null;
+  stderrChunks: Buffer[];
+  exited: boolean;
+}
+
+const persistentCodexAppServers = new Map<string, PersistentCodexAppServer>();
+
+function persistentCodexAppServerEnabled(input: RunCodexAppServerPromptInput): boolean {
+  if (input.appServerUrl || input.appServerSocketPath) {
+    return false;
+  }
+
+  const flag = process.env.CODEX_DISCORD_CODEX_APP_SERVER_PERSISTENT?.trim().toLowerCase() ?? "";
+  return !["0", "false", "off", "no"].includes(flag);
+}
+
+function persistentCodexAppServerKey(input: RunCodexAppServerPromptInput): string {
+  return JSON.stringify([resolveCodexCommand(input), input.codexHome?.trim() ?? ""]);
+}
+
+async function disposePersistentCodexAppServer(server: PersistentCodexAppServer): Promise<void> {
+  if (persistentCodexAppServers.get(server.key) === server) {
+    persistentCodexAppServers.delete(server.key);
+  }
+  await terminateManagedAppServer(server.child);
+  if (server.tempRoot) {
+    await rm(server.tempRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function disposeCodexPersistentAppServers(): Promise<void> {
+  const servers = [...persistentCodexAppServers.values()];
+  persistentCodexAppServers.clear();
+  await Promise.allSettled(servers.map((server) => disposePersistentCodexAppServer(server)));
+}
+
+export function codexPersistentAppServerCount(): number {
+  return persistentCodexAppServers.size;
+}
+
+async function acquirePersistentCodexAppServer(input: RunCodexAppServerPromptInput): Promise<
+  | { server: PersistentCodexAppServer; reused: boolean }
+  | { failure: RunCodexPromptResult }
+> {
+  const key = persistentCodexAppServerKey(input);
+  const existing = persistentCodexAppServers.get(key);
+
+  if (existing && !existing.exited) {
+    return { server: existing, reused: true };
+  }
+
+  const transport = await prepareAppServerTransport(input);
+  const started = await startAppServer(input, transport);
+
+  if (started.spawnFailure || !started.child) {
+    if (transport.tempRoot) {
+      await rm(transport.tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return {
+      failure: started.spawnFailure ?? appServerFailure({
+        message: "Codex app-server could not be started.",
+        sessionId: input.sessionId ?? null,
+        stderr: Buffer.concat(started.stderrChunks).toString("utf8"),
+      }),
+    };
+  }
+
+  const server: PersistentCodexAppServer = {
+    key,
+    child: started.child,
+    clientUrl: transport.clientUrl,
+    tempRoot: transport.tempRoot,
+    stderrChunks: started.stderrChunks,
+    exited: false,
+  };
+
+  started.child.once("exit", () => {
+    server.exited = true;
+    if (persistentCodexAppServers.get(key) === server) {
+      persistentCodexAppServers.delete(key);
+    }
+    if (server.tempRoot) {
+      void rm(server.tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  persistentCodexAppServers.set(key, server);
+
+  try {
+    await waitForAppServer(
+      transport.readiness,
+      input.timeoutMs > 0 ? Math.min(input.timeoutMs, 10_000) : 10_000,
+    );
+  } catch (error) {
+    await disposePersistentCodexAppServer(server);
+    return {
+      failure: appServerFailure({
+        message: error instanceof Error ? error.message : "Codex app-server did not become ready.",
+        sessionId: input.sessionId ?? null,
+        stderr: Buffer.concat(started.stderrChunks).toString("utf8"),
+      }),
+    };
+  }
+
+  return { server, reused: false };
+}
+
+function isLikelyAppServerConnectionFailure(result: RunCodexPromptResult): boolean {
+  if (result.status !== "failed") {
+    return false;
+  }
+
+  const text = `${result.finalMessage} ${result.stderr}`;
+  return /ECONNREFUSED|ECONNRESET|ENOENT|EPIPE|socket hang up|Unexpected server response|closed before the connection/i.test(text);
 }
 
 function appServerFailure(input: {
@@ -1041,7 +1176,6 @@ export async function runCodexAppServerPrompt(
     };
   }
 
-  const transport = await prepareAppServerTransport(input);
   const workspaceRoot = await ensureAsciiWorkspaceRoot(input.workspaceRoot);
   const originalWorkspaceRoot = path.resolve(input.workspaceRoot);
   const requestedCwd = path.resolve(input.cwd);
@@ -1049,6 +1183,41 @@ export async function runCodexAppServerPrompt(
     workspaceRoot === originalWorkspaceRoot
       ? requestedCwd
       : path.join(workspaceRoot, path.relative(originalWorkspaceRoot, requestedCwd));
+
+  if (persistentCodexAppServerEnabled(input)) {
+    let allowStaleRetry = true;
+
+    for (;;) {
+      const acquired = await acquirePersistentCodexAppServer(input);
+
+      if ("failure" in acquired) {
+        return acquired.failure;
+      }
+
+      const result = await runPromptAgainstAppServer({
+        input,
+        serverUrl: acquired.server.clientUrl,
+        cwd,
+        stderrChunks: acquired.server.stderrChunks,
+      }).catch((error) => appServerFailure({
+        message: error instanceof Error ? error.message : "Codex app-server prompt failed",
+        sessionId: input.sessionId ?? null,
+        stderr: Buffer.concat(acquired.server.stderrChunks).toString("utf8"),
+      }));
+
+      if (acquired.reused && allowStaleRetry && isLikelyAppServerConnectionFailure(result)) {
+        // The pooled server died or went unreachable between prompts; replace
+        // it once and retry against a fresh process.
+        allowStaleRetry = false;
+        await disposePersistentCodexAppServer(acquired.server);
+        continue;
+      }
+
+      return result;
+    }
+  }
+
+  const transport = await prepareAppServerTransport(input);
   const server = await startAppServer(input, transport);
 
   if (server.spawnFailure) {

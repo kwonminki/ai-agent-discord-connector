@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { listNativeCodexSessions } from "./codexAdapter.js";
-import { runClaudePrompt } from "./claudeRunner.js";
+import { runClaudePrompt, type ClaudeRunnerProgressEvent } from "./claudeRunner.js";
 import { runCodexPrompt, type CodexRunnerProgressEvent } from "./codexRunner.js";
 import { runWorkspaceCommand } from "./runner.js";
 
@@ -24,7 +24,7 @@ export interface AgentJob {
 }
 
 interface AgentJobOptions {
-  onProgress?: (event: CodexRunnerProgressEvent) => Promise<void> | void;
+  onProgress?: (event: CodexRunnerProgressEvent | ClaudeRunnerProgressEvent) => Promise<void> | void;
 }
 
 interface ParsedAgentJob extends AgentJob {
@@ -115,7 +115,7 @@ function sendJobResult(socket: WebSocket, jobId: string, result: unknown) {
   socket.send(JSON.stringify({ type: "agent-job-result", jobId, result }));
 }
 
-function sendJobProgress(socket: WebSocket, jobId: string, event: CodexRunnerProgressEvent) {
+function sendJobProgress(socket: WebSocket, jobId: string, event: CodexRunnerProgressEvent | ClaudeRunnerProgressEvent) {
   socket.send(JSON.stringify({ type: "agent-job-progress", jobId, event }));
 }
 

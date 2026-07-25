@@ -92,6 +92,50 @@ describe("runClaudePrompt", () => {
     }
   });
 
+  it("surfaces thinking blocks as agent-thought progress events", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-thought-"));
+    const fakeClaude = path.join(tempRoot, "claude");
+    const events: unknown[] = [];
+
+    try {
+      await writeFile(
+        fakeClaude,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-session-2' }));",
+          "console.log(JSON.stringify({ type: 'assistant', session_id: 'claude-session-2', message: { content: [{ type: 'thinking', thinking: '로그 파일부터 살펴봐야겠다.' }, { type: 'text', text: '로그를 확인하겠습니다.' }] } }));",
+          "console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'claude-session-2', result: '확인 완료' }));",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeClaude, 0o755);
+
+      await expect(
+        runClaudePrompt({
+          workspaceRoot: tempRoot,
+          cwd: tempRoot,
+          prompt: "로그 확인해줘",
+          timeoutMs: 5_000,
+          claudeCommand: fakeClaude,
+          onProgress: (event) => {
+            events.push(event);
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: "completed",
+        finalMessage: "확인 완료",
+      });
+
+      expect(events).toEqual([
+        { type: "thread-started", sessionId: "claude-session-2" },
+        { type: "agent-thought", text: "로그 파일부터 살펴봐야겠다." },
+        { type: "agent-message", text: "로그를 확인하겠습니다." },
+      ]);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("streams an additional user message into an active Claude Code turn", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-steer-"));
     const fakeClaude = path.join(tempRoot, "claude");
@@ -139,6 +183,9 @@ describe("runClaudePrompt", () => {
         timeoutMs: 5_000,
         controlKey: "claude-thread-1",
         claudeCommand: fakeClaude,
+        // This fake only emits its result once stdin closes, which is the
+        // one-shot lifecycle; persistent sessions are covered separately.
+        persistentSession: false,
       });
 
       for (let attempt = 0; attempt < 100; attempt += 1) {

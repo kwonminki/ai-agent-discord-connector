@@ -10,16 +10,16 @@
 
 Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI agent를 Discord 스레드로 사용하고, 서로 대화시킬 수 있는 개인용 브리지**입니다.
 
-## v1.3 Release
+## v1.4 Release
 
-> ### NEW · 원클릭 자동 서버 업데이트
-> **새 버전 태그가 올라오면 Discord 공지에서 버튼 하나로 연결된 컴퓨터를 업데이트할 수 있습니다.**
+> ### NEW · 상주 Agent 세션 — 예약과 백그라운드 작업이 실제로 돌아갑니다
+> **Claude Code 세션이 메시지 사이에도 살아 있어, 채팅이 끝난 뒤에 발화한 예약(cron)·백그라운드 작업 결과가 Discord로 도착합니다.**
 >
-> `v1.3.0` 같은 annotated tag가 GitHub에 push되면 release 채널에 기능 설명과 **등록 서버 업데이트** 버튼이 자동으로 나타납니다. 버튼을 누르면 온라인 Connector를 실시간 탐색하고, 컴퓨터마다 Codex 또는 Claude Code 하나를 선택해 언어별 전용 업데이트 스레드에서 exact release commit을 적용합니다.
+> 기존에는 메시지마다 agent 프로세스를 새로 띄워서 세션 안에 걸어둔 예약과 백그라운드 작업이 턴이 끝나는 순간 사라졌습니다. 이제 스레드마다 Claude Code 프로세스 하나가 idle로 유지되고, 조용한 사이에 나온 결과는 **Claude Code 세션 알림** 메시지로 해당 스레드에 게시됩니다. "30초 뒤에 알려줘" 같은 요청이 그대로 동작합니다. Codex도 app-server 하나를 상주시켜 메시지마다 서버를 재기동하던 낭비를 없앴습니다.
 >
-> 사용자 작업 스레드는 건드리지 않고 실행 중인 Worker 작업은 graceful drain으로 보존합니다. 오프라인 컴퓨터는 안전하게 건너뛰며 정적 서버 목록이나 주기 polling도 필요 없습니다. v1.2의 실시간 steering, durable queue, 독립 Worker와 [Agent Relay](docs/agent-relay.ko.md) 기능도 그대로 포함됩니다.
+> 함께 추가: Claude thinking(생각)과 중간 진행 텍스트를 생략·절단 없이 분할 전송, `/chat-new location:browse` 폴더 탐색 UI, `/chat-resume`로 지운 스레드의 세션 복구, `/howtouse prompt:` 결합 전달, 메인 채널은 스레드 안내 전용으로 정리(채널 이름 변경 같은 Discord 시스템 메시지도 agent로 새지 않음), 대기열 작업마다 완료 멘션. v1.3의 원클릭 서버 업데이트와 [Agent Relay](docs/agent-relay.ko.md)도 그대로 포함됩니다.
 
-> **v1.3.1 패치:** release 버튼 안내가 Operator 역할을 멘션하며, Ubuntu/macOS/Windows shell 선택, Mac Node 22 탐색, token 설정 파일 권한을 보강했습니다. 로컬 변경이 있는 dirty 저장소는 자동 병합하지 않고 안전하게 업데이트를 중단합니다.
+> **v1.3 요약:** annotated tag를 push하면 release 채널 공지의 **등록 서버 업데이트** 버튼으로 연결된 컴퓨터들을 원클릭 업데이트할 수 있습니다. 사용자 스레드는 건드리지 않고 실행 중인 Worker는 graceful drain으로 보존합니다.
 
 Discord에서 평소처럼 메시지를 보내면 agent가 연결된 컴퓨터에서 작업하고, 중요한 진행 상황과 최종 답변을 Discord로 돌려줍니다. 이미지, 영상, 오디오, 일반 파일도 양방향으로 주고받을 수 있습니다.
 
@@ -95,7 +95,7 @@ Codex 또는 Claude Code가 작업 중일 때 같은 스레드에 보낸 일반 
 
 | 명령 | 용도 |
 | --- | --- |
-| `/chat-new` | 새 Discord 스레드와 agent 세션 만들기 |
+| `/chat-new` | 새 Discord 스레드와 agent 세션 만들기. `location:browse`로 폴더를 눌러가며 선택 |
 | `/status` | 실행 상태, 마지막 활동, 대기열과 모델 설정 확인 |
 | `/settings` | 현재 적용되는 모델과 effort 확인 |
 | `/model` | 채널별 추천 목록에서 부모 기본값 또는 현재 스레드 모델 변경. 직접 입력도 지원 |
@@ -105,7 +105,8 @@ Codex 또는 Claude Code가 작업 중일 때 같은 스레드에 보낸 일반 
 | `/queue-clear` | 아직 시작하지 않은 요청 삭제 |
 | `/interrupt` | 현재 Codex 또는 Claude Code turn 중단 |
 | `/fork` | 현재 세션 맥락을 복제해 새 스레드 만들기 |
-| `/howtouse` | 현재 agent에게 Discord 파일·설문 전송법 알려주기 |
+| `/chat-resume` | 지운 스레드의 Claude Code 세션을 골라 스레드로 다시 열기 |
+| `/howtouse` | 현재 agent에게 Discord 파일·설문 전송법 알려주기. `prompt:`로 요청을 함께 전달 |
 | `/where` | 현재 컴퓨터, 작업 폴더와 session ID 확인 |
 | `/agent-chat` | 현재 스레드와 다른 agent 스레드 사이의 자동 대화 시작 |
 | `/agent-chat-status` | Agent Relay 왕복, turn, 상태 확인 |

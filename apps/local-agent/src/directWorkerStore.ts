@@ -22,6 +22,9 @@ import type {
   CodexUserInputRequest,
   CodexUserInputResponse,
 } from "./codexRunner.js";
+import type { ClaudeRunnerProgressEvent } from "./claudeRunner.js";
+
+export type DirectWorkerProgressEvent = CodexRunnerProgressEvent | ClaudeRunnerProgressEvent;
 import {
   directWorkerControlRequestSchema,
   directWorkerJobRequestSchema,
@@ -49,7 +52,7 @@ export type DirectWorkerJobResult =
   | { jobId: string; error: { message: string }; completedAt: string };
 
 export type DirectWorkerJobEvent =
-  | { type: "progress"; at: string; event: CodexRunnerProgressEvent }
+  | { type: "progress"; at: string; event: DirectWorkerProgressEvent }
   | { type: "approval"; at: string; approvalId: string; request: CodexApprovalRequest }
   | { type: "user-input"; at: string; userInputId: string; request: CodexUserInputRequest };
 
@@ -57,6 +60,20 @@ export interface DirectWorkerControlResult {
   controlId: string;
   result: unknown;
   completedAt: string;
+}
+
+export interface ClaudeSessionNotificationRecord {
+  at: string;
+  controlKey: string;
+  sessionId: string | null;
+  message: string;
+  isError?: boolean;
+}
+
+export interface PendingClaudeSessionNotifications {
+  controlKey: string;
+  records: ClaudeSessionNotificationRecord[];
+  totalCount: number;
 }
 
 interface CachedDirectWorkerEvents {
@@ -192,11 +209,31 @@ export function defaultDirectWorkerRoot(): string {
   return path.resolve(process.env.CONNECT_WORKER_ROOT ?? ".connect/worker");
 }
 
+function parseClaudeSessionNotificationText(text: string): ClaudeSessionNotificationRecord[] {
+  const lastNewline = text.lastIndexOf("\n");
+  const completeText = lastNewline >= 0 ? text.slice(0, lastNewline) : "";
+
+  return completeText
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const parsed = JSON.parse(line) as ClaudeSessionNotificationRecord;
+        return typeof parsed?.message === "string" && typeof parsed?.controlKey === "string"
+          ? [parsed]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
 export function createDirectWorkerStore(rootPath = defaultDirectWorkerRoot()) {
   const root = path.resolve(rootPath);
   const jobsRoot = path.join(root, "jobs");
   const controlsRoot = path.join(root, "controls");
   const deadLetterRoot = path.join(root, "dead-letter");
+  const claudeNotificationsRoot = path.join(root, "claude-session-notifications");
   const eventCache = new Map<string, CachedDirectWorkerEvents>();
 
   function jobDirectory(jobId: string): string {
@@ -419,7 +456,7 @@ export function createDirectWorkerStore(rootPath = defaultDirectWorkerRoot()) {
     readResult(jobId: string) {
       return readJson<DirectWorkerJobResult>(path.join(jobDirectory(jobId), "result.json"));
     },
-    async appendProgress(jobId: string, event: CodexRunnerProgressEvent): Promise<void> {
+    async appendProgress(jobId: string, event: DirectWorkerProgressEvent): Promise<void> {
       const record: DirectWorkerJobEvent = { type: "progress", at: new Date().toISOString(), event };
       await appendPrivateJsonLine(path.join(jobDirectory(jobId), "events.jsonl"), record);
     },
@@ -617,6 +654,68 @@ export function createDirectWorkerStore(rootPath = defaultDirectWorkerRoot()) {
     },
     async removeControl(controlId: string): Promise<void> {
       await rm(controlDirectory(controlId), { recursive: true, force: true });
+    },
+    async appendClaudeSessionNotification(record: ClaudeSessionNotificationRecord): Promise<void> {
+      const controlKey = validId(record.controlKey);
+      await appendPrivateJsonLine(
+        path.join(claudeNotificationsRoot, `${controlKey}.jsonl`),
+        { ...record, controlKey },
+      );
+      await signalWorker();
+    },
+    async readPendingClaudeSessionNotifications(): Promise<PendingClaudeSessionNotifications[]> {
+      let entries: string[];
+      try {
+        entries = await readdir(claudeNotificationsRoot);
+      } catch (error) {
+        if (isMissing(error)) {
+          return [];
+        }
+        throw error;
+      }
+
+      const pending = await Promise.all(entries
+        .filter((entry) => entry.endsWith(".jsonl"))
+        .map(async (entry) => {
+          const controlKey = entry.slice(0, -".jsonl".length);
+
+          try {
+            validId(controlKey);
+          } catch {
+            return null;
+          }
+
+          const text = await readFile(path.join(claudeNotificationsRoot, entry), "utf8")
+            .catch(() => "");
+          const records = parseClaudeSessionNotificationText(text);
+          const cursor = await readJson<{ deliveredCount?: unknown }>(
+            path.join(claudeNotificationsRoot, `${controlKey}.cursor.json`),
+          );
+          const deliveredCount =
+            typeof cursor?.deliveredCount === "number" && cursor.deliveredCount >= 0
+              ? Math.floor(cursor.deliveredCount)
+              : 0;
+
+          return {
+            controlKey,
+            records: records.slice(deliveredCount),
+            totalCount: records.length,
+          } satisfies PendingClaudeSessionNotifications;
+        }));
+
+      return pending.filter(
+        (entry): entry is PendingClaudeSessionNotifications =>
+          entry !== null && entry.records.length > 0,
+      );
+    },
+    async ackClaudeSessionNotifications(controlKey: string, deliveredCount: number): Promise<void> {
+      await writeJsonAtomic(
+        path.join(claudeNotificationsRoot, `${validId(controlKey)}.cursor.json`),
+        {
+          deliveredCount: Math.max(0, Math.floor(deliveredCount)),
+          updatedAt: new Date().toISOString(),
+        },
+      );
     },
   };
 }

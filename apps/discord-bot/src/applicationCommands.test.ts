@@ -42,6 +42,7 @@ describe("Discord application commands", () => {
       "review",
       "fix-tests",
       "summarize",
+      "chat-resume",
       "howtouse",
       "where",
       "reload",

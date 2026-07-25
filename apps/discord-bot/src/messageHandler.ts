@@ -63,6 +63,7 @@ import {
   formatForkSessionResult,
   formatAgentResultPosted,
   formatLiveAgentProgress,
+  splitDiscordMessageContent,
   formatMaintenancePanel,
   formatNewChatAck,
   formatNewChatResult,
@@ -70,6 +71,10 @@ import {
   formatReloadConfirmation,
   formatReloadResult,
   formatRestartDrainPending,
+  formatAgentMainChannelGuidance,
+  formatClaudeResumeAck,
+  formatClaudeResumeResult,
+  formatClaudeResumeSelection,
   formatSyncSelection,
   formatSyncSelectionAck,
   formatSyncAck,
@@ -205,6 +210,20 @@ export interface CreateDiscordMessageHandlerInput {
     totalAvailable: number;
     limit: number;
   }>;
+  listResumableClaudeSessions?: (input: { limit: number }) => Promise<Array<{
+    id: string;
+    firstUserMessage: string | null;
+    cwd: string;
+    updatedAt: string;
+  }>>;
+  resumeClaudeSession?: (input: {
+    sessionId: string;
+    guild: DiscordGuildSurface;
+  }) => Promise<
+    | { status: "created"; channelId: string; threadName: string }
+    | { status: "already-linked"; channelId: string }
+    | { status: "not-found" }
+  >;
   getSyncStatus?: () => Promise<{
     workspaceCount: number;
     sessionChannelCount: number;
@@ -447,6 +466,7 @@ async function sendThreadCompletionMention(input: {
   agentLabel: "Codex" | "Claude Code";
   failed: boolean;
   deferForPendingRequest?: boolean;
+  pendingRequestCount?: number;
 }): Promise<"sent" | "deferred" | "unavailable"> {
   if (input.message.relayRequest || input.deferForPendingRequest) {
     return "deferred";
@@ -464,10 +484,15 @@ async function sendThreadCompletionMention(input: {
     return "unavailable";
   }
 
+  const pendingRequestCount = input.pendingRequestCount ?? 0;
+  const completionText = `**${input.agentLabel} 작업 ${input.failed ? "실패" : "완료"}**${
+    pendingRequestCount > 0 ? ` — 대기열 ${pendingRequestCount}개를 이어서 진행합니다` : ""
+  }`;
+
   try {
     await input.message.guild.sendTextMessage(
       input.message.channelId,
-      `**${input.agentLabel} 작업 ${input.failed ? "실패" : "완료"}**`,
+      completionText,
       { mentionRoleIds },
     );
     return "sent";
@@ -620,6 +645,10 @@ function readableProgressEvent(event: {
     return event.text;
   }
 
+  if (event.type === "agent-thought" && event.text) {
+    return `생각: ${event.text}`;
+  }
+
   if (event.type !== "operation-progress") {
     return event.eventType ?? event.type;
   }
@@ -649,22 +678,11 @@ function readableProgressEvent(event: {
   return event.detail ? `${event.label ?? "작업 중"} · ${event.detail}` : (event.label ?? "작업 중");
 }
 
-const MAX_LIVE_PROGRESS_MESSAGES_PER_TASK = 40;
-
-function isConcreteProgressBoundary(event: {
-  type: string;
-  label?: string;
-  detail?: string;
-  text?: string;
-  eventType?: string;
-}): boolean {
-  if (event.type !== "operation-progress") {
-    return false;
-  }
-
-  const label = event.label?.trim() ?? "";
-  return /^(?:명령 실행|파일 수정|파일 탐색|탐색마침|웹 검색|이미지 생성|도구 |도구 실행|계획 업데이트)/.test(label);
-}
+const LIVE_PROGRESS_CHUNK_LENGTH = 1_800;
+const MAX_LIVE_PROGRESS_MESSAGES_PER_TASK = (() => {
+  const parsed = Number.parseInt(process.env.CONNECT_LIVE_PROGRESS_MAX_MESSAGES ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60;
+})();
 
 function parseCodexApprovalResponse(content: string): {
   token: string;
@@ -934,11 +952,11 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     return pendingCodexUserInputs.has(channelId);
   }
 
-  function channelHasPendingAgentRequests(
+  function channelPendingAgentRequestCount(
     channelId: string,
     channelContext: ManagedDiscordChannelContext,
-  ): boolean {
-    return channelQueues.get(channelId)?.pending.some((entry) => {
+  ): number {
+    return channelQueues.get(channelId)?.pending.filter((entry) => {
       const routed = routeDiscordMessage({
         channelMode: channelContext.channelMode,
         agentMain: channelContext.agentMain,
@@ -953,7 +971,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         routed.type === "claude-chat" ||
         routed.type === "codex-review" ||
         routed.type === "fork-session";
-    }) ?? false;
+    }).length ?? 0;
   }
 
   function routeMessage(
@@ -1218,60 +1236,72 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     finish(): void;
   } {
     let lastText: string | null = null;
-    let pendingAgentText: string | null = null;
     let sentCount = 0;
+    let announcedTruncation = false;
 
-    const send = async (text: string) => {
-      if (
-        input.channelContext.discordDeliveryMode !== "thread" ||
-        !input.message.guild?.sendTextMessage ||
-        sentCount >= MAX_LIVE_PROGRESS_MESSAGES_PER_TASK ||
-        text === lastText
-      ) {
+    // Long intermediate texts are split into full standalone messages instead
+    // of being truncated; the cap only guards against runaway flooding.
+    const send = async (text: string, kind: "message" | "thought") => {
+      if (!input.message.guild?.sendTextMessage || text === lastText) {
         return;
       }
 
       lastText = text;
-      sentCount += 1;
+      const chunks = splitDiscordMessageContent(text, LIVE_PROGRESS_CHUNK_LENGTH);
 
-      try {
-        await input.message.guild.sendTextMessage(
-          input.message.channelId,
-          formatLiveAgentProgress({ agentLabel: input.agentLabel, text }),
-        );
-      } catch (error) {
-        console.warn("discord-bot failed to send an unmentioned progress message", error);
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        if (sentCount >= MAX_LIVE_PROGRESS_MESSAGES_PER_TASK) {
+          if (!announcedTruncation) {
+            announcedTruncation = true;
+            try {
+              await input.message.guild.sendTextMessage(
+                input.message.channelId,
+                formatLiveAgentProgress({
+                  agentLabel: input.agentLabel,
+                  text: "중간 메시지가 너무 많아 이후 진행 텍스트는 생략합니다. 최종 답변은 그대로 전송됩니다.",
+                }),
+              );
+            } catch (error) {
+              console.warn("discord-bot failed to send a progress truncation notice", error);
+            }
+          }
+          return;
+        }
+
+        sentCount += 1;
+
+        try {
+          await input.message.guild.sendTextMessage(
+            input.message.channelId,
+            formatLiveAgentProgress({
+              agentLabel: input.agentLabel,
+              text: chunk,
+              kind,
+              continued: chunkIndex > 0,
+            }),
+          );
+        } catch (error) {
+          console.warn("discord-bot failed to send an unmentioned progress message", error);
+        }
       }
     };
 
     return {
       async publish(event) {
-        if (event.type === "agent-message") {
-          const text = event.text?.trim() ?? "";
-
-          if (!text || text === pendingAgentText) {
-            return;
-          }
-
-          if (pendingAgentText) {
-            await send(pendingAgentText);
-          }
-
-          pendingAgentText = text;
+        if (event.type !== "agent-message" && event.type !== "agent-thought") {
           return;
         }
 
-        if (!isConcreteProgressBoundary(event)) {
+        const text = event.text?.trim() ?? "";
+
+        if (!text) {
           return;
         }
 
-        if (pendingAgentText) {
-          await send(pendingAgentText);
-          pendingAgentText = null;
-        }
+        await send(text, event.type === "agent-thought" ? "thought" : "message");
       },
       finish() {
-        pendingAgentText = null;
+        lastText = null;
       },
     };
   }
@@ -1655,6 +1685,57 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       return;
     }
 
+    if (routed.type === "claude-resume-list") {
+      try {
+        if (!input.listResumableClaudeSessions) {
+          throw new Error("Claude 세션 다시 열기는 direct 모드에서만 지원됩니다.");
+        }
+
+        const sessions = await input.listResumableClaudeSessions({ limit: 25 });
+        await reply(formatClaudeResumeSelection({ sessions }));
+      } catch (error) {
+        await reply(formatClaudeResumeResult({
+          status: "error",
+          message: error instanceof Error ? error.message : "Claude 세션 목록 조회에 실패했습니다.",
+        }));
+      }
+      return;
+    }
+
+    if (routed.type === "claude-resume") {
+      const queuedReply = await reply(formatClaudeResumeAck());
+
+      try {
+        if (!input.resumeClaudeSession) {
+          throw new Error("Claude 세션 다시 열기는 direct 모드에서만 지원됩니다.");
+        }
+
+        if (!message.guild) {
+          throw new Error("Discord guild context is required to reopen a session thread.");
+        }
+
+        const result = await input.resumeClaudeSession({
+          sessionId: routed.sessionId,
+          guild: message.guild,
+        });
+        await updateQueuedReply(
+          queuedReply,
+          (replyMessage) => reply(replyMessage),
+          formatClaudeResumeResult(result),
+        );
+      } catch (error) {
+        await updateQueuedReply(
+          queuedReply,
+          (replyMessage) => reply(replyMessage),
+          formatClaudeResumeResult({
+            status: "error",
+            message: error instanceof Error ? error.message : "Claude 세션 다시 열기에 실패했습니다.",
+          }),
+        );
+      }
+      return;
+    }
+
     if (routed.type === "admin-sync-select") {
       const queuedReply = await reply(formatSyncSelectionAck({ limit: routed.limit }));
 
@@ -1952,9 +2033,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           channelContext,
           agentLabel: "Codex",
           failed: responseFailed,
-          deferForPendingRequest:
-            questionMentionSent ||
-            (!responseFailed && channelHasPendingAgentRequests(message.channelId, channelContext)),
+          deferForPendingRequest: questionMentionSent,
+          pendingRequestCount: channelPendingAgentRequestCount(message.channelId, channelContext),
         });
 
         if (reviewSessionId) {
@@ -2220,6 +2300,13 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
 
     if (routed.type === "claude-chat") {
+      if (channelContext.agentMain === "claude" && channelContext.discordDeliveryMode !== "thread") {
+        // Sessions are managed per thread; the main channels only host the
+        // session threads and shared notifications.
+        await reply(formatAgentMainChannelGuidance({ agentLabel: "Claude Code" }));
+        return;
+      }
+
       const prompt = routed.content;
       const agentSettings = agentSettingsController.get(message.channelId, channelContext);
       const claudeMessage = {
@@ -2282,7 +2369,12 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               return;
             }
 
-            const status = event.type === "operation-progress" ? event.label : event.type;
+            const status =
+              event.type === "operation-progress"
+                ? event.label
+                : event.type === "agent-thought"
+                  ? "생각 중"
+                  : event.type;
             recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
             await progressReporter.publish(event);
             await updateQueuedReply(
@@ -2294,7 +2386,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                 latestMessage:
                   event.type === "operation-progress"
                     ? event.detail
-                    : event.type === "agent-message"
+                    : event.type === "agent-message" || event.type === "agent-thought"
                       ? event.text
                       : undefined,
                 recentEvents,
@@ -2337,9 +2429,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           channelContext,
           agentLabel: "Claude Code",
           failed: responseFailed,
-          deferForPendingRequest:
-            questionMentionSent ||
-            (!responseFailed && channelHasPendingAgentRequests(message.channelId, channelContext)),
+          deferForPendingRequest: questionMentionSent,
+          pendingRequestCount: channelPendingAgentRequestCount(message.channelId, channelContext),
         });
       } catch (error) {
         progressReporter.finish();
@@ -2373,6 +2464,15 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
 
     if (routed.type === "codex-chat" || routed.type === "codex-continue-session") {
+      if (
+        routed.type === "codex-chat" &&
+        channelContext.agentMain === "codex" &&
+        channelContext.discordDeliveryMode !== "thread"
+      ) {
+        await reply(formatAgentMainChannelGuidance({ agentLabel: "Codex" }));
+        return;
+      }
+
       const prompt = routed.content;
       const agentSettings = agentSettingsController.get(message.channelId, channelContext);
       const codexMessage = {
@@ -2565,9 +2665,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           channelContext,
           agentLabel: "Codex",
           failed: responseFailed,
-          deferForPendingRequest:
-            questionMentionSent ||
-            (!responseFailed && channelHasPendingAgentRequests(message.channelId, channelContext)),
+          deferForPendingRequest: questionMentionSent,
+          pendingRequestCount: channelPendingAgentRequestCount(message.channelId, channelContext),
         });
 
         if (nextSessionId) {

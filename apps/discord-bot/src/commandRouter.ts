@@ -40,6 +40,8 @@ export type RoutedDiscordMessage =
   | { type: "admin-sync"; limit: number }
   | { type: "admin-sync-select"; limit: number }
   | { type: "admin-sync-selected"; sessionIds: string[] }
+  | { type: "claude-resume-list" }
+  | { type: "claude-resume"; sessionId: string }
   | { type: "admin-sync-status" }
   | { type: "admin-sync-mode"; mode: TranscriptSyncMode }
   | { type: "codex-run-mode"; mode: "default" | "fast" | "task" }
@@ -158,15 +160,34 @@ function parseCodexShortcut(
   return null;
 }
 
+function parseChatResume(content: string): { sessionId: string | null } | null {
+  const match = content.trim().match(/^chat\s+resume(?:\s+([A-Za-z0-9-]{8,64}))?$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  return { sessionId: match[1]?.trim() || null };
+}
+
 function parseAgentUsageShortcut(
   content: string,
   locale: ConnectorLocale = "ko",
 ): { content: string } | null {
-  const normalized = content.replace(/\s+/g, " ").trim();
+  const match = content.trim().match(/^\/(?:howtouse|how-to-use|사용법)(?:\s+([\s\S]+))?$/i);
 
-  return /^\/(?:howtouse|how-to-use|사용법)$/i.test(normalized)
-    ? { content: codexDiscordHowToUsePrompt(locale) }
-    : null;
+  if (!match) {
+    return null;
+  }
+
+  const usagePrompt = codexDiscordHowToUsePrompt(locale);
+  const extraPrompt = match[1]?.trim();
+
+  return {
+    content: extraPrompt
+      ? `${usagePrompt}\n\n---\n위 사용법을 참고해서 이어지는 요청을 처리해줘:\n${extraPrompt}`
+      : usagePrompt,
+  };
 }
 
 function codexCommandShortcut(
@@ -1373,6 +1394,26 @@ export function routeDiscordMessage(input: RouteDiscordMessageInput): RoutedDisc
       }
 
       return { type: "admin-sync-select", limit: syncSelect.limit };
+    }
+
+    const chatResume = parseChatResume(trimmedContent);
+
+    if (chatResume) {
+      const authorization = authorizeCommand({
+        userRoleIds: input.userRoleIds,
+        allowedRoleIds: input.allowedRoleIds,
+      });
+
+      if (!authorization.allowed) {
+        return {
+          type: "denied",
+          reason: authorization.reason ?? "User does not have an allowed role",
+        };
+      }
+
+      return chatResume.sessionId
+        ? { type: "claude-resume", sessionId: chatResume.sessionId }
+        : { type: "claude-resume-list" };
     }
 
     const syncSelected = parseAdminSyncSelected(trimmedContent);

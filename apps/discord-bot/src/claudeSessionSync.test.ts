@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   discoverClaudeCodeSessions,
   isExternallyStartedClaudeCodeSession,
+  resumeClaudeCodeSessionThread,
   syncClaudeCodeSessionsToDiscord,
   type DiscoveredClaudeCodeSession,
 } from "./claudeSessionSync.js";
@@ -307,6 +308,120 @@ describe("syncClaudeCodeSessionsToDiscord", () => {
       });
 
       expect(guild.createThread).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resumeClaudeCodeSessionThread", () => {
+  async function writeConnectorSessionFixture(tempRoot: string): Promise<void> {
+    const projectRoot = path.join(tempRoot, ".claude", "projects", "-repo");
+    await mkdir(projectRoot, { recursive: true });
+    await writeFile(
+      path.join(projectRoot, "session-connector.jsonl"),
+      [
+        JSON.stringify({
+          type: "user",
+          sessionId: "session-connector",
+          cwd: "/repo",
+          entrypoint: "sdk-cli",
+          timestamp: "2026-07-20T04:31:37.956Z",
+          message: { role: "user", content: [{ type: "text", text: "지운 스레드 대화야" }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          sessionId: "session-connector",
+          cwd: "/repo",
+          entrypoint: "sdk-cli",
+          timestamp: "2026-07-20T04:31:45.812Z",
+          message: { role: "assistant", content: [{ type: "text", text: "네" }] },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+  }
+
+  it("returns not-found for unknown session ids", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-resume-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+
+    try {
+      await writeConnectorSessionFixture(tempRoot);
+      await expect(
+        resumeClaudeCodeSessionThread({
+          guild: { createThread: vi.fn(), sendTextMessage: vi.fn(), ensureChannelAvailable: vi.fn() },
+          controlApi: { createManagedChannel: vi.fn() },
+          stateStore,
+          computerId: "mac",
+          computerDisplayName: "Kwon Mac",
+          parentChannelId: "claude-parent",
+          claudeHome: path.join(tempRoot, ".claude"),
+          sessionId: "no-such-session",
+        }),
+      ).resolves.toEqual({ status: "not-found" });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("recreates a thread for a connector session, reuses live links, and replaces deleted ones", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-resume-flow-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const createThread = vi.fn()
+      .mockResolvedValueOnce({ id: "thread-1" })
+      .mockResolvedValueOnce({ id: "thread-2" });
+    const ensureChannelAvailable = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const guild = {
+      createThread,
+      sendTextMessage: vi.fn().mockResolvedValue({ id: "context" }),
+      ensureChannelAvailable,
+    };
+    const controlApi = { createManagedChannel: vi.fn().mockResolvedValue({ id: "managed" }) };
+    const baseInput = {
+      guild,
+      controlApi,
+      stateStore,
+      computerId: "mac",
+      computerDisplayName: "Kwon Mac",
+      parentChannelId: "claude-parent",
+      claudeHome: path.join(tempRoot, ".claude"),
+      sessionId: "session-connector",
+    };
+
+    try {
+      await writeConnectorSessionFixture(tempRoot);
+
+      await expect(resumeClaudeCodeSessionThread(baseInput)).resolves.toEqual({
+        status: "created",
+        channelId: "thread-1",
+        threadName: "지운 스레드 대화야",
+      });
+      let state = await stateStore.read();
+      expect(state.sessionChannels.map((channel) => channel.discordChannelId)).toEqual(["thread-1"]);
+      expect(state.sessionChannels[0]).toMatchObject({
+        claudeSessionId: "session-connector",
+        channelMode: "claude-code",
+        discordDeliveryMode: "thread",
+      });
+
+      // The thread still exists in Discord → reuse it instead of duplicating.
+      await expect(resumeClaudeCodeSessionThread(baseInput)).resolves.toEqual({
+        status: "already-linked",
+        channelId: "thread-1",
+      });
+
+      // The thread was deleted in Discord → drop the stale link and recreate.
+      await expect(resumeClaudeCodeSessionThread(baseInput)).resolves.toEqual({
+        status: "created",
+        channelId: "thread-2",
+        threadName: "지운 스레드 대화야",
+      });
+      state = await stateStore.read();
+      expect(state.sessionChannels.map((channel) => channel.discordChannelId)).toEqual(["thread-2"]);
+      expect(createThread).toHaveBeenCalledTimes(2);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

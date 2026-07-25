@@ -124,6 +124,40 @@ describe("routeDiscordMessage", () => {
     });
   });
 
+  it("appends a trailing prompt to the howtouse guidance", () => {
+    const codexRoute = routeDiscordMessage({
+      channelMode: "session-linked",
+      content: "/howtouse 방금 만든 차트 이미지를 여기로 보내줘",
+      userRoleIds: ["role-operator"],
+      allowedRoleIds: ["role-operator"],
+    });
+
+    expect(codexRoute).toEqual({
+      type: "codex-chat",
+      content: expect.stringContaining("10MiB"),
+    });
+    expect(codexRoute).toEqual({
+      type: "codex-chat",
+      content: expect.stringContaining("이어지는 요청을 처리해줘"),
+    });
+    expect(codexRoute).toEqual({
+      type: "codex-chat",
+      content: expect.stringContaining("방금 만든 차트 이미지를 여기로 보내줘"),
+    });
+
+    const multilineRoute = routeDiscordMessage({
+      channelMode: "claude-code",
+      content: "/howtouse 결과 파일을 보내줘.\n두 번째 줄 요청도 유지돼야 해.",
+      userRoleIds: ["role-operator"],
+      allowedRoleIds: ["role-operator"],
+    });
+
+    expect(multilineRoute).toEqual({
+      type: "claude-chat",
+      content: expect.stringContaining("결과 파일을 보내줘.\n두 번째 줄 요청도 유지돼야 해."),
+    });
+  });
+
   it("sends English attachment guidance to agents in an English installation", () => {
     const route = routeDiscordMessage({
       channelMode: "session-linked",
@@ -222,6 +256,38 @@ describe("routeDiscordMessage", () => {
       type: "admin-sync-select",
       limit: 10,
     });
+  });
+
+  it("routes chat resume commands to the Claude session resume flow", () => {
+    expect(
+      routeDiscordMessage({
+        channelMode: "shell-admin",
+        content: "chat resume",
+        userRoleIds: ["role-operator"],
+        allowedRoleIds: ["role-operator"],
+      }),
+    ).toEqual({ type: "claude-resume-list" });
+
+    expect(
+      routeDiscordMessage({
+        channelMode: "shell-admin",
+        content: "chat resume 9d41bbde-5b0c-4ba5-b0b7-7dc7c0984e46",
+        userRoleIds: ["role-operator"],
+        allowedRoleIds: ["role-operator"],
+      }),
+    ).toEqual({
+      type: "claude-resume",
+      sessionId: "9d41bbde-5b0c-4ba5-b0b7-7dc7c0984e46",
+    });
+
+    expect(
+      routeDiscordMessage({
+        channelMode: "shell-admin",
+        content: "chat resume",
+        userRoleIds: [],
+        allowedRoleIds: ["role-operator"],
+      }),
+    ).toMatchObject({ type: "denied" });
   });
 
   it("routes shell-admin sync selection preview requests", () => {

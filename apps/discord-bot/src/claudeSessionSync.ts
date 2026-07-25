@@ -541,66 +541,150 @@ export async function syncClaudeCodeSessionsToDiscord(
   }
 
   for (const session of selectedSessions) {
-    const threadName = claudeThreadName(session);
-    const thread = await input.guild.createThread({
-      name: threadName,
-      parentChannelId: input.parentChannelId,
-      autoArchiveDuration: 10_080,
-      reason: claudeSessionTopic(session),
-    });
-    const sessionWorkspaceId = workspaceId(input.computerId, session.cwd);
-    const channel: SyncedSessionChannelState = {
-      codexSessionId: null,
-      claudeSessionId: session.id,
-      threadName,
-      updatedAt: session.updatedAt,
-      cwd: session.cwd,
-      workspaceRoot: session.cwd,
-      workspaceDisplayName: workspaceDisplayName(session.cwd),
-      discordCategoryId: null,
-      discordChannelId: thread.id,
-      discordParentChannelId: input.parentChannelId,
-      discordDeliveryMode: "thread",
-      channelMode: "claude-code",
-      channelName: sanitizeChannelName(threadName),
-      computerId: input.computerId,
-      workspaceId: sessionWorkspaceId,
-      contextPostedAt: new Date().toISOString(),
-    };
-
-    await input.controlApi.createManagedChannel({
-      id: `channel:${thread.id}`,
-      discordChannelId: thread.id,
-      computerId: input.computerId,
-      workspaceId: sessionWorkspaceId,
-      channelMode: "claude-code",
-    });
-
-    state.sessionChannels.push(channel);
+    const created = await createClaudeSessionThreadForSession(input, session);
+    state.sessionChannels.push(created.channel);
     existingClaudeSessionIds.add(session.id);
-    await input.stateStore.update((latestState) => ({
-      ...latestState,
-      sessionChannels: latestState.sessionChannels.some(
-        (candidate) => candidate.discordChannelId === channel.discordChannelId,
-      )
-        ? latestState.sessionChannels
-        : [...latestState.sessionChannels, channel],
-    }));
     result.createdThreads += 1;
-
-    if (input.guild.sendTextMessage) {
-      const mentionRoleIds = input.mentionRoleIds?.filter((roleId) => roleId.trim().length > 0);
-      await input.guild.sendTextMessage(
-        thread.id,
-        claudeSessionContextMessage({
-          session,
-          computerDisplayName: input.computerDisplayName,
-          threadName,
-        }),
-        mentionRoleIds && mentionRoleIds.length > 0 ? { mentionRoleIds } : undefined,
-      );
-    }
   }
 
   return result;
+}
+
+interface CreateClaudeSessionThreadInput {
+  guild: Pick<DiscordGuildSurface, "createThread" | "sendTextMessage">;
+  controlApi: Pick<ControlApiClient, "createManagedChannel">;
+  stateStore: DirectSyncStateStore;
+  computerId: string;
+  computerDisplayName: string;
+  parentChannelId: string;
+  mentionRoleIds?: string[];
+}
+
+async function createClaudeSessionThreadForSession(
+  input: CreateClaudeSessionThreadInput,
+  session: DiscoveredClaudeCodeSession,
+): Promise<{ channelId: string; threadName: string; channel: SyncedSessionChannelState }> {
+  if (!input.guild.createThread) {
+    throw new Error("Discord thread creation is not available for this bot mode.");
+  }
+
+  const threadName = claudeThreadName(session);
+  const thread = await input.guild.createThread({
+    name: threadName,
+    parentChannelId: input.parentChannelId,
+    autoArchiveDuration: 10_080,
+    reason: claudeSessionTopic(session),
+  });
+  const sessionWorkspaceId = workspaceId(input.computerId, session.cwd);
+  const channel: SyncedSessionChannelState = {
+    codexSessionId: null,
+    claudeSessionId: session.id,
+    threadName,
+    updatedAt: session.updatedAt,
+    cwd: session.cwd,
+    workspaceRoot: session.cwd,
+    workspaceDisplayName: workspaceDisplayName(session.cwd),
+    discordCategoryId: null,
+    discordChannelId: thread.id,
+    discordParentChannelId: input.parentChannelId,
+    discordDeliveryMode: "thread",
+    channelMode: "claude-code",
+    channelName: sanitizeChannelName(threadName),
+    computerId: input.computerId,
+    workspaceId: sessionWorkspaceId,
+    contextPostedAt: new Date().toISOString(),
+  };
+
+  await input.controlApi.createManagedChannel({
+    id: `channel:${thread.id}`,
+    discordChannelId: thread.id,
+    computerId: input.computerId,
+    workspaceId: sessionWorkspaceId,
+    channelMode: "claude-code",
+  });
+
+  await input.stateStore.update((latestState) => ({
+    ...latestState,
+    sessionChannels: latestState.sessionChannels.some(
+      (candidate) => candidate.discordChannelId === channel.discordChannelId,
+    )
+      ? latestState.sessionChannels
+      : [...latestState.sessionChannels, channel],
+  }));
+
+  if (input.guild.sendTextMessage) {
+    const mentionRoleIds = input.mentionRoleIds?.filter((roleId) => roleId.trim().length > 0);
+    await input.guild.sendTextMessage(
+      thread.id,
+      claudeSessionContextMessage({
+        session,
+        computerDisplayName: input.computerDisplayName,
+        threadName,
+      }),
+      mentionRoleIds && mentionRoleIds.length > 0 ? { mentionRoleIds } : undefined,
+    );
+  }
+
+  return { channelId: thread.id, threadName, channel };
+}
+
+export async function listResumableClaudeSessions(
+  input: { claudeHome?: string; limit?: number } = {},
+): Promise<DiscoveredClaudeCodeSession[]> {
+  const sessions = await discoverClaudeCodeSessions({ claudeHome: input.claudeHome });
+
+  return sessions
+    .filter((session) => Boolean(session.firstUserMessage?.trim()))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, Math.max(1, input.limit ?? 25));
+}
+
+export type ResumeClaudeCodeSessionResult =
+  | { status: "created"; channelId: string; threadName: string }
+  | { status: "already-linked"; channelId: string }
+  | { status: "not-found" };
+
+export async function resumeClaudeCodeSessionThread(
+  input: CreateClaudeSessionThreadInput & {
+    guild: Pick<DiscordGuildSurface, "createThread" | "sendTextMessage" | "ensureChannelAvailable">;
+    claudeHome?: string;
+    sessionId: string;
+  },
+): Promise<ResumeClaudeCodeSessionResult> {
+  const sessionId = input.sessionId.trim();
+  const sessions = await discoverClaudeCodeSessions({ claudeHome: input.claudeHome });
+  const session = sessions.find((candidate) => candidate.id === sessionId) ?? null;
+
+  if (!session) {
+    return { status: "not-found" };
+  }
+
+  const state = await input.stateStore.read();
+  const linkedChannels = state.sessionChannels.filter(
+    (channel) => channel.claudeSessionId?.trim() === sessionId,
+  );
+
+  for (const linked of linkedChannels) {
+    const available = input.guild.ensureChannelAvailable
+      ? await input.guild.ensureChannelAvailable(linked.discordChannelId).catch(() => false)
+      : true;
+
+    if (available) {
+      return { status: "already-linked", channelId: linked.discordChannelId };
+    }
+  }
+
+  if (linkedChannels.length > 0) {
+    // Every recorded thread for this session is gone from Discord; drop the
+    // stale links so the fresh thread becomes the session's only mapping.
+    await input.stateStore.update((latestState) => ({
+      ...latestState,
+      sessionChannels: latestState.sessionChannels.filter(
+        (channel) => channel.claudeSessionId?.trim() !== sessionId,
+      ),
+    }));
+  }
+
+  const created = await createClaudeSessionThreadForSession(input, session);
+  return { status: "created", channelId: created.channelId, threadName: created.threadName };
 }

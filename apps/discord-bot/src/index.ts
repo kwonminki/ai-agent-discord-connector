@@ -34,6 +34,8 @@ import { syncCodexSessionTranscriptUpdates } from "./codexTranscriptSync.js";
 import { notifyCodexTaskCompletions } from "./codexTaskNotifications.js";
 import {
   discoverClaudeCodeSessions,
+  listResumableClaudeSessions,
+  resumeClaudeCodeSessionThread,
   syncClaudeCodeSessionsToDiscord,
   type DiscoveredClaudeCodeSession,
 } from "./claudeSessionSync.js";
@@ -41,6 +43,7 @@ import {
   DEFAULT_CLAUDE_COMPLETION_IDLE_MS,
   notifyClaudeCodeTaskCompletions,
 } from "./claudeTaskNotifications.js";
+import { deliverClaudeIdleNotifications } from "./claudeIdleNotifications.js";
 import { loadConnectConfig } from "./connectConfig.js";
 import { createControlApiClient } from "./controlApiClient.js";
 import { createDirectSyncStateStore } from "./directState.js";
@@ -70,6 +73,7 @@ export const BOT_RELOAD_EXIT_CODE = 42;
 const DEFAULT_TRANSCRIPT_SYNC_INTERVAL_MS = 5_000;
 const DEFAULT_TASK_NOTIFICATION_INTERVAL_MS = 3_000;
 const DEFAULT_CLAUDE_SESSION_SYNC_INTERVAL_MS = 5_000;
+const DEFAULT_CLAUDE_IDLE_NOTIFICATION_INTERVAL_MS = 5_000;
 const DEFAULT_CLAUDE_SESSION_SYNC_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_CLAUDE_SESSION_SYNC_LIMIT = 10;
 const DEFAULT_SCHEDULE_POLL_INTERVAL_MS = 30_000;
@@ -203,6 +207,10 @@ const TASK_NOTIFICATION_INTERVAL_MS = resolveRealtimeIntervalMs(
 const CLAUDE_SESSION_SYNC_INTERVAL_MS = resolveRealtimeIntervalMs(
   process.env.CONNECT_CLAUDE_SESSION_SYNC_INTERVAL_MS,
   DEFAULT_CLAUDE_SESSION_SYNC_INTERVAL_MS,
+);
+const CLAUDE_IDLE_NOTIFICATION_INTERVAL_MS = resolveRealtimeIntervalMs(
+  process.env.CONNECT_CLAUDE_IDLE_NOTIFICATION_INTERVAL_MS,
+  DEFAULT_CLAUDE_IDLE_NOTIFICATION_INTERVAL_MS,
 );
 const CLAUDE_SESSION_SYNC_LOOKBACK_MS = resolveBoundedInteger(
   process.env.CONNECT_CLAUDE_SESSION_SYNC_LOOKBACK_MS,
@@ -718,6 +726,33 @@ export async function startBot(): Promise<void> {
       ? (discordChannelId, patch) => directStateStore.updateSessionChannelAgentSettings(discordChannelId, patch)
       : undefined,
     previewSelectableCodexSessions,
+    listResumableClaudeSessions:
+      connectConfig?.mode === "direct"
+        ? (resumeInput) => listResumableClaudeSessions({ limit: resumeInput.limit })
+        : undefined,
+    resumeClaudeSession: (() => {
+      if (connectConfig?.mode !== "direct" || !directStateStore) {
+        return undefined;
+      }
+
+      const claudeParentChannelId = connectConfig.direct.claudeChannelId?.trim();
+
+      if (!claudeParentChannelId) {
+        return undefined;
+      }
+
+      return (resumeInput: { sessionId: string; guild: DiscordGuildSurface }) =>
+        resumeClaudeCodeSessionThread({
+          guild: resumeInput.guild,
+          controlApi: controlApiClient,
+          stateStore: directStateStore,
+          computerId: connectConfig.direct.computerId,
+          computerDisplayName: connectConfig.direct.computerDisplayName,
+          parentChannelId: claudeParentChannelId,
+          mentionRoleIds: connectConfig.discord.allowedRoleIds,
+          sessionId: resumeInput.sessionId,
+        });
+    })(),
     getSyncStatus,
     setTranscriptSyncMode,
     syncTranscriptUpdates,
@@ -1014,6 +1049,35 @@ export async function startBot(): Promise<void> {
       timer.unref();
     }
 
+    if (directWorkerClient) {
+      let running = false;
+      const timer = setInterval(() => {
+        if (running) {
+          return;
+        }
+
+        const guild = resolveReadyGuildSurface(client, connectConfig?.discord.guildId, answerCopyStore, locale);
+
+        if (!guild?.sendTextMessage) {
+          return;
+        }
+
+        running = true;
+        void deliverClaudeIdleNotifications({
+          guild,
+          source: directWorkerClient,
+          mentionRoleIds: connectConfig?.discord.allowedRoleIds ?? [],
+        })
+          .catch((error) => {
+            console.error("discord-bot failed to deliver Claude idle notifications", error);
+          })
+          .finally(() => {
+            running = false;
+          });
+      }, CLAUDE_IDLE_NOTIFICATION_INTERVAL_MS);
+      timer.unref();
+    }
+
     if (directStateStore) {
       let running = false;
       const timer = setInterval(() => {
@@ -1120,6 +1184,7 @@ export async function startBot(): Promise<void> {
         : undefined,
   });
   attachDiscordInteractionHandler(client, handleMessage, {
+    cwdPicker: connectConfig?.mode === "direct",
     isManagedChannel: async (channelId) => Boolean(await controlApiClient.getChannelContext(channelId)),
     modelAutocomplete: async (channelId, query) => {
       const channelContext = await controlApiClient.getChannelContext(channelId);

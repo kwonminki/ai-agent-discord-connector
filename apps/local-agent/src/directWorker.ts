@@ -4,13 +4,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  disposeCodexPersistentAppServers,
   interruptActiveCodexAppServerTurn,
   runCodexAppServerPrompt,
   steerActiveCodexAppServerTurn,
 } from "./codexAppServerRunner.js";
 import {
+  disposeClaudePersistentSessions,
   interruptActiveClaudeTurn,
   runClaudePrompt,
+  setClaudeSessionIdleNotificationSink,
   steerActiveClaudeTurn,
 } from "./claudeRunner.js";
 import {
@@ -186,6 +189,12 @@ export async function startDirectWorker(options: {
       : interruptActiveCodexAppServerTurn(control.controlKey));
 
   await store.initialize();
+
+  setClaudeSessionIdleNotificationSink((notification) => {
+    store.appendClaudeSessionNotification(notification).catch((error) => {
+      console.error("direct-worker failed to persist Claude idle notification", error);
+    });
+  });
 
   function notifyWakeWaiters(): void {
     for (const wake of [...wakeWaiters]) {
@@ -397,6 +406,9 @@ export async function startDirectWorker(options: {
         await wait(Math.min(pollIntervalMs, 25));
       }
       await processControls();
+      await disposeClaudePersistentSessions("worker-stop");
+      await disposeCodexPersistentAppServers();
+      setClaudeSessionIdleNotificationSink(null);
       await releaseLock();
     })();
     return stopPromise;

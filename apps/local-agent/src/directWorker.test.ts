@@ -309,13 +309,10 @@ describe("direct worker", () => {
       "  if (messages.length === 2) {",
       "    readyToFinish = true;",
       "    console.log(JSON.stringify({ type: 'assistant', session_id: 'claude-steer-1', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'steering applied' }] } }));",
-      "  }",
-      "});",
-      "input.on('close', () => {",
-      "  if (readyToFinish) {",
       "    console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'claude-steer-1', result: 'steering applied' }));",
       "  }",
       "});",
+      "input.on('close', () => process.exit(0));",
     ].join("\n"), "utf8");
     await chmod(fakeClaude, 0o755);
     const worker = await startDirectWorker({ store, pollIntervalMs: 10, maxConcurrency: 1 });

@@ -1040,7 +1040,7 @@ pnpm test
 | --- | --- |
 | `/status` | 현재 세션 연결, 실행 상태, 마지막 활동 시각과 대기열을 확인합니다. |
 | `/fork` | 현재 Codex 또는 Claude Code 세션의 맥락을 복제해 새 Discord thread로 분기합니다. Codex에서는 `app-server`가 필요합니다. |
-| `/howtouse` | 현재 agent 세션에 Discord 첨부 송수신, 최종 미디어 설문, Codex `request_user_input` 중간 미디어 질문 형식을 전달합니다. Claude Code에는 중간 질문 왕복 미지원 안내를 전달합니다. |
+| `/howtouse [prompt]` | 현재 agent 세션에 Discord 첨부 송수신, 최종 미디어 설문, Codex `request_user_input` 중간 미디어 질문 형식을 전달합니다. Claude Code에는 중간 질문 왕복 미지원 안내를 전달합니다. `prompt`를 함께 주면 사용법 안내 뒤에 그 요청이 이어져 한 턴에 전달됩니다(텍스트로는 `/howtouse 결과 이미지를 보내줘`). |
 | `/queue prompt:<요청>` | 현재 작업에 끼어들지 않고 다음 작업으로 실행할 요청을 예약합니다. |
 
 ## 버전 호환성
@@ -1209,7 +1209,7 @@ chat new cwd:/Users/me/project name:주간 보고서
 | `/review prompt:<관점>` | `codex exec review`로 현재 변경사항을 리뷰시킵니다. |
 | `/fix-tests` | 테스트 실행, 실패 분석, 수정, 재검증을 요청합니다. |
 | `/summarize target:<대상>` | 현재 채널 또는 지정 대상을 요약합니다. |
-| `/howtouse` | 현재 Codex 또는 Claude Code 세션에 Discord 첨부 송수신 형식과 agent별 사용자 질문 지원 범위를 안내합니다. |
+| `/howtouse [prompt]` | 현재 Codex 또는 Claude Code 세션에 Discord 첨부 송수신 형식과 agent별 사용자 질문 지원 범위를 안내합니다. `prompt`를 붙이면 안내와 함께 해당 요청을 같은 턴에 전달합니다. |
 | `/compact prompt:<요청>` | 대화형 `/compact` passthrough가 아니라, 현재 작업 맥락을 압축 요약하도록 Codex에 요청합니다. |
 | `/skill name:<skill> prompt:<요청>` | 지정한 skill 관점으로 Codex 요청을 실행합니다. |
 | `/model model:<모델 또는 default>` | 현재 Codex 또는 Claude Code thread의 모델 override를 영구 저장합니다. `default`는 main 기본값을 다시 상속합니다. |

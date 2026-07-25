@@ -10,16 +10,16 @@
 
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
-## v1.3 Release
+## v1.4 Release
 
-> ### NEW · One-click automatic server updates
-> **When a new version tag is published, update every connected computer from one button in the Discord release notice.**
+> ### NEW · Persistent agent sessions — schedules and background work actually run
+> **Claude Code sessions now stay alive between messages, so in-session schedules (cron) and background tasks keep running after the chat goes quiet, and their results arrive back in Discord.**
 >
-> Pushing an annotated tag such as `v1.3.0` automatically posts the feature notes and an **Update registered servers** button. A click discovers online Connectors, selects exactly one Codex or Claude Code agent per computer, and applies the exact tagged commit through a localized dedicated update thread.
+> Previously every message spawned a fresh agent process, so anything scheduled inside a session died the moment the turn ended. Now one Claude Code process stays idle per thread, and results produced while nobody is chatting are posted to the thread as a **Claude Code session notification** — "remind me in 30 seconds" simply works. Codex keeps one persistent app-server as well, removing the per-message server restart cost.
 >
-> Active user threads stay untouched and running Worker jobs are preserved through graceful drain. Offline computers are safely skipped, with no static server list or periodic polling. v1.2 live steering, durable queues, independent Workers, and [Agent Relay](docs/agent-relay.en.md) remain included.
+> Also included: Claude thinking and intermediate progress are delivered as split messages instead of being dropped or truncated, `/chat-new location:browse` opens a clickable folder picker, `/chat-resume` reopens sessions whose threads were deleted, `/howtouse prompt:` forwards a request together with the usage guide, main channels now only host threads (and Discord system messages such as channel renames never leak into agents), and every queued completion mentions the operator. v1.3 one-click fleet updates and [Agent Relay](docs/agent-relay.en.md) remain included.
 
-> **v1.3.1 patch:** Release actions now mention the Operator role and improve Ubuntu/macOS/Windows shell selection, Mac Node 22 discovery, and token-bearing setup file permissions. A dirty checkout is never auto-merged; the update stops safely for manual review.
+> **v1.3 recap:** pushing an annotated tag posts a release notice with an **Update registered servers** button that updates connected computers one click at a time, preserving running Workers through graceful drain and never touching user threads.
 
 Send an ordinary Discord message and the agent works on the connected computer, then returns important progress and the final answer to Discord. Images, video, audio, and general files can move in both directions.
 
@@ -95,7 +95,7 @@ Use `/fork` inside a session thread to copy its conversation context into a new 
 
 | Command | Purpose |
 | --- | --- |
-| `/chat-new` | Create a Discord thread and agent session |
+| `/chat-new` | Create a Discord thread and agent session. Use `location:browse` to pick the folder interactively |
 | `/status` | Show activity, last progress, queue, and model settings |
 | `/settings` | Show the effective model and effort |
 | `/model` | Choose a parent default or thread model from channel-aware suggestions; custom input remains supported |
@@ -105,7 +105,8 @@ Use `/fork` inside a session thread to copy its conversation context into a new 
 | `/queue-clear` | Remove requests that have not started |
 | `/interrupt` | Interrupt the active Codex or Claude Code turn |
 | `/fork` | Copy the current context into a new thread |
-| `/howtouse` | Teach the current agent Discord file and survey output |
+| `/chat-resume` | Reopen a Claude Code session as a thread after its thread was deleted |
+| `/howtouse` | Teach the current agent Discord file and survey output. Add `prompt:` to forward a request with it |
 | `/where` | Show the computer, working directory, and session ID |
 | `/agent-chat` | Start an automatic conversation with another agent thread |
 | `/agent-chat-status` | Show Agent Relay round-trip, turn, and state |

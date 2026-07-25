@@ -32,6 +32,15 @@ import {
   routeAgentSurveyOtherAnswer,
   routeDiscordComponent,
 } from "./componentRouter.js";
+import {
+  CWD_PICKER_IDS,
+  buildCwdPickerPayload,
+  cwdPickerChildPath,
+  cwdPickerHomePath,
+  cwdPickerParentPath,
+  isCwdPickerComponent,
+  parseCwdPickerState,
+} from "./cwdPicker.js";
 import { localizeDiscordModal, localizeDiscordOutgoing } from "./i18n.js";
 import {
   getAnswerCopyText,
@@ -58,6 +67,9 @@ interface DiscordInteractionHandlerOptions {
   ): ModelAutocompleteChoice[] | Promise<ModelAutocompleteChoice[]>;
   answerCopyStore?: AnswerCopyStore;
   locale?: ConnectorLocale;
+  // Enables the interactive cwd picker for /chat-new. Requires the bot to run
+  // on the same machine as the workspaces (direct mode).
+  cwdPicker?: boolean;
 }
 
 interface DiscordMessageHandlerOptions {
@@ -111,6 +123,7 @@ function getRoleIds(message: Message): string[] {
 
 interface EditableDiscordMessageLike {
   id: string;
+  content?: string;
   edit?(message: unknown): Promise<unknown>;
 }
 
@@ -410,6 +423,13 @@ export function attachDiscordMessageHandler(
 
   client.on("messageCreate", (message) => {
     const discordMessage = message as Message;
+
+    // Discord system messages (channel renames, pins, thread events, ...) are
+    // not user prompts and must never reach an agent session.
+    if (discordMessage.system) {
+      return;
+    }
+
     const rawAttachments = discordMessage.attachments
       ? [...discordMessage.attachments.values()].map((attachment) => ({
           id: attachment.id,
@@ -812,6 +832,135 @@ function encodedNewChatCommand(input: {
   return `__cdc_new_chat ${encodeURIComponent(JSON.stringify(input))}`;
 }
 
+interface CwdPickerInteractionLike {
+  customId: string;
+  values?: string[];
+  user: { id: string };
+  channelId: string;
+  member?: unknown;
+  guild: Guild | null;
+  message?: EditableDiscordMessageLike;
+  reply(message: unknown): Promise<unknown>;
+  editReply?(message: unknown): Promise<unknown>;
+  fetchReply?(): Promise<unknown>;
+  followUp?(message: unknown): Promise<unknown>;
+  channel?: { send?(message: unknown): Promise<unknown> } | null;
+  update?(message: unknown): Promise<unknown>;
+}
+
+async function handleCwdPickerInteraction(
+  componentInteraction: CwdPickerInteractionLike,
+  handleMessage: (message: DiscordMessageLike) => Promise<void>,
+  options: DiscordInteractionHandlerOptions,
+  locale: ConnectorLocale,
+): Promise<void> {
+  const respondEphemeral = async (content: string) => {
+    await componentInteraction.reply({
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+      content: localizeConnectorText(content, locale),
+    }).catch((error) => {
+      console.warn("discord-bot failed to send a cwd picker notice", error);
+    });
+  };
+
+  if (!options.cwdPicker) {
+    await respondEphemeral("폴더 찾아보기는 direct 모드에서만 사용할 수 있습니다. cwd 옵션에 경로를 직접 입력해주세요.");
+    return;
+  }
+
+  const customId = componentInteraction.customId;
+
+  if (customId === CWD_PICKER_IDS.open) {
+    await componentInteraction.reply(await buildCwdPickerPayload({ path: cwdPickerHomePath() }));
+    return;
+  }
+
+  if (typeof componentInteraction.update !== "function") {
+    await respondEphemeral("이 Discord 클라이언트는 메시지 갱신을 지원하지 않습니다.");
+    return;
+  }
+
+  const state = parseCwdPickerState(componentInteraction.message?.content);
+
+  if (!state) {
+    await respondEphemeral("폴더 선택 상태를 읽을 수 없습니다. /chat-new location:browse로 다시 열어주세요.");
+    return;
+  }
+
+  if (customId === CWD_PICKER_IDS.cancel) {
+    await componentInteraction.update({
+      allowedMentions: { parse: [] },
+      content: localizeConnectorText("폴더 선택을 취소했습니다.", locale),
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (customId === CWD_PICKER_IDS.confirm) {
+    await componentInteraction.update({
+      allowedMentions: { parse: [] },
+      content: localizeConnectorText(`📁 \`${state.path}\` 폴더로 새 채팅을 만드는 중...`, locale),
+      embeds: [],
+      components: [],
+    });
+    await handleMessage({
+      authorBot: false,
+      userId: componentInteraction.user.id,
+      channelId: componentInteraction.channelId,
+      content: encodedNewChatCommand({
+        name: state.name,
+        cwd: state.path,
+        useCategory: true,
+        initialPrompt: state.prompt,
+      }),
+      roleIds: getMemberRoleIds(componentInteraction.member),
+      guild: createDiscordGuildSurface(componentInteraction.guild, options),
+      reply: interactionReplyAdapter(componentInteraction, {
+        initialReplySent: true,
+        answerCopyStore: options.answerCopyStore,
+        locale,
+      }),
+    });
+    return;
+  }
+
+  let nextPath = state.path;
+  let nextPage = state.page;
+
+  if (customId === CWD_PICKER_IDS.up) {
+    nextPath = cwdPickerParentPath(state.path);
+    nextPage = 1;
+  } else if (customId === CWD_PICKER_IDS.home) {
+    nextPath = cwdPickerHomePath();
+    nextPage = 1;
+  } else if (customId === CWD_PICKER_IDS.enter) {
+    const selected = componentInteraction.values?.[0]?.trim();
+
+    if (!selected) {
+      return;
+    }
+
+    nextPath = cwdPickerChildPath(state.path, selected);
+    nextPage = 1;
+  } else if (customId === CWD_PICKER_IDS.pagePrev) {
+    nextPage = Math.max(1, state.page - 1);
+  } else if (customId === CWD_PICKER_IDS.pageNext) {
+    nextPage = state.page + 1;
+  } else {
+    await respondEphemeral("지원하지 않는 폴더 선택 동작입니다.");
+    return;
+  }
+
+  await componentInteraction.update(await buildCwdPickerPayload({
+    path: nextPath,
+    page: nextPage,
+    name: state.name,
+    prompt: state.prompt,
+  }));
+}
+
 function newChatModal(kind: "general" | "current") {
   return {
     title: kind === "current" ? "현재 폴더에서 새 채팅" : "새 일반 채팅",
@@ -1069,6 +1218,32 @@ export function attachDiscordInteractionHandler(
 
         if (initialReplyDeferred) {
           await deferReply.call(interaction);
+        }
+
+        if (
+          commandName.toLowerCase() === "chat-new" &&
+          (interaction.options.getString("location")?.trim().toLowerCase() ?? "") === "browse"
+        ) {
+          const pickerPayload = options.cwdPicker
+            ? await buildCwdPickerPayload({
+                path: cwdPickerHomePath(),
+                name: interaction.options.getString("name")?.trim() || null,
+                prompt: interaction.options.getString("prompt")?.trim() || null,
+              })
+            : {
+                allowedMentions: { parse: [] },
+                content: localizeConnectorText(
+                  "폴더 찾아보기는 direct 모드에서만 사용할 수 있습니다. cwd 옵션에 경로를 직접 입력해주세요.",
+                  locale,
+                ),
+              };
+
+          if (initialReplyDeferred && typeof interaction.editReply === "function") {
+            await interaction.editReply(pickerPayload);
+          } else {
+            await interaction.reply(pickerPayload);
+          }
+          return;
         }
 
         const content = routeDiscordApplicationCommand(interaction, locale);
@@ -1452,6 +1627,11 @@ export function attachDiscordInteractionHandler(
 
         const kind = componentInteraction.customId === COMPONENT_IDS.newGeneralChat ? "general" : "current";
         await componentInteraction.showModal(localizeDiscordModal(newChatModal(kind), locale));
+        return;
+      }
+
+      if (isCwdPickerComponent(componentInteraction.customId)) {
+        await handleCwdPickerInteraction(componentInteraction, handleMessage, options, locale);
         return;
       }
 

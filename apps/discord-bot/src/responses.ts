@@ -3424,11 +3424,122 @@ export function formatAgentProgressUpdate(
   return textPayload(agentProgressText(input, progress, `${agentLabel(input)} 작업 중`));
 }
 
+export function formatClaudeResumeSelection(input: {
+  sessions: Array<{ id: string; firstUserMessage: string | null; cwd: string; updatedAt: string }>;
+}): DiscordMessagePayload {
+  if (input.sessions.length === 0) {
+    return textPayload([
+      "**클로드 세션 다시 열기**",
+      "다시 열 수 있는 Claude Code 세션이 없습니다.",
+    ].join("\n"));
+  }
+
+  const options = input.sessions.slice(0, 25).map((session) => {
+    const title =
+      session.firstUserMessage?.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ||
+      `세션 ${session.id.slice(0, 8)}`;
+    const folder = session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd;
+    const updated = session.updatedAt.replace("T", " ").slice(0, 16);
+
+    return {
+      label: title.slice(0, 95),
+      value: session.id,
+      description: `${folder} · ${updated}`.slice(0, 95),
+    };
+  });
+
+  return {
+    allowedMentions: { parse: [] },
+    content: [
+      "**클로드 세션 다시 열기**",
+      `최근 세션 ${options.length}개 중에서 선택하면 Claude Code 채널 아래에 스레드로 다시 연결됩니다.`,
+      "스레드를 지웠어도 세션 기록이 남아 있으면 대화가 그대로 이어집니다.",
+    ].join("\n"),
+    embeds: [],
+    components: [
+      actionRow([
+        selectMenu({
+          customId: COMPONENT_IDS.chatResumeSelected,
+          placeholder: "다시 열 세션 선택...",
+          options,
+        }),
+      ]),
+    ],
+  };
+}
+
+export function formatAgentMainChannelGuidance(input: {
+  agentLabel: "Codex" | "Claude Code";
+}): DiscordMessagePayload {
+  return {
+    allowedMentions: { parse: [] },
+    content: [
+      "**메인 채널에서는 바로 대화를 시작할 수 없습니다**",
+      `${input.agentLabel} 세션은 스레드 단위로 관리됩니다. 아래 버튼으로 새 채팅을 만들어 거기서 대화해주세요.`,
+      "지웠던 세션을 다시 열려면 `/chat-resume`을 사용하세요.",
+    ].join("\n"),
+    embeds: [],
+    components: [
+      actionRow([
+        button({
+          customId: COMPONENT_IDS.newCurrentFolderChat,
+          label: "새 채팅 만들기",
+          style: BUTTON_STYLES.primary,
+        }),
+        button({
+          customId: "cdc:cwdpick:open",
+          label: "📁 폴더 골라서 만들기",
+          style: BUTTON_STYLES.secondary,
+        }),
+      ]),
+    ],
+  };
+}
+
+export function formatClaudeResumeAck(): DiscordMessagePayload {
+  return textPayload("**클로드 세션 다시 열기**\n세션 스레드를 다시 여는 중...");
+}
+
+export function formatClaudeResumeResult(
+  input:
+    | { status: "created"; channelId: string; threadName: string }
+    | { status: "already-linked"; channelId: string }
+    | { status: "not-found" }
+    | { status: "error"; message: string },
+): DiscordMessagePayload {
+  switch (input.status) {
+    case "created":
+      return textPayload([
+        "**클로드 세션 스레드를 다시 열었습니다**",
+        `<#${input.channelId}> 에서 이어서 대화하세요.`,
+      ].join("\n"));
+    case "already-linked":
+      return textPayload([
+        "**이미 연결된 스레드가 있습니다**",
+        `<#${input.channelId}> 에서 이어서 대화하세요.`,
+      ].join("\n"));
+    case "not-found":
+      return textPayload([
+        "**세션을 찾을 수 없습니다**",
+        "세션 기록이 삭제되었거나 다른 컴퓨터의 세션일 수 있습니다. `/chat-resume`로 목록을 다시 확인하세요.",
+      ].join("\n"));
+    default:
+      return textPayload([
+        "**세션 다시 열기 실패**",
+        input.message,
+      ].join("\n"));
+  }
+}
+
 export function formatLiveAgentProgress(input: {
   agentLabel: "Codex" | "Claude Code";
   text: string;
+  kind?: "message" | "thought";
+  continued?: boolean;
 }): DiscordMessagePayload {
-  return textPayload(`**${input.agentLabel} 진행**\n${input.text}`);
+  const heading = input.kind === "thought" ? "생각" : "진행";
+  const suffix = input.continued ? " (계속)" : "";
+  return textPayload(`**${input.agentLabel} ${heading}${suffix}**\n${input.text}`);
 }
 
 export function formatAgentResultPosted(input: {

@@ -248,8 +248,18 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
     ],
   },
   {
+    name: "chat-resume",
+    description: "기존 Claude Code 세션 목록에서 골라 스레드로 다시 엽니다(지운 스레드 복구).",
+  },
+  {
     name: "howtouse",
     description: "Discord 첨부 입력과 결과 파일 전송법을 현재 agent 세션에 전달합니다.",
+    options: [
+      stringOption({
+        name: "prompt",
+        description: "사용법 안내와 함께 agent에게 전달할 요청",
+      }),
+    ],
   },
   {
     name: "where",
@@ -444,11 +454,12 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
       }),
       stringOption({
         name: "location",
-        description: "general, current, path 중 선택합니다. 비우면 cwd 유무로 결정합니다.",
+        description: "general, current, path, browse(폴더 찾아보기) 중 선택합니다. 비우면 cwd 유무로 결정합니다.",
         choices: [
           { name: "general", value: "general" },
           { name: "current", value: "current" },
           { name: "path", value: "path" },
+          { name: "browse (폴더 찾아보기)", value: "browse" },
         ],
       }),
       stringOption({
@@ -680,10 +691,14 @@ export function routeDiscordApplicationCommand(
         `codex ${interaction.options.getString("target")?.trim() || "현재 채널"}을 요약하고 다음 액션을 제안해줘`,
         locale,
       );
+    case "chat-resume":
+      return "chat resume";
     case "howtouse":
     case "how-to-use":
-    case "how_to_use":
-      return "/howtouse";
+    case "how_to_use": {
+      const prompt = interaction.options.getString("prompt")?.trim();
+      return prompt ? `/howtouse ${prompt}` : "/howtouse";
+    }
     case "where":
       return "where";
     case "reload": {

@@ -11,6 +11,10 @@ describe("routeDiscordComponent", () => {
     expect(routeDiscordComponent("cdc:sync:25")).toBe("sync select 25");
     expect(routeDiscordComponent("cdc:sync:select:25")).toBe("sync select 25");
     expect(routeDiscordComponent("cdc:sync:all:25")).toBe("sync all 25");
+    expect(
+      routeDiscordComponent("cdc:chat:resume:selected", ["9d41bbde-5b0c-4ba5-b0b7-7dc7c0984e46"]),
+    ).toBe("chat resume 9d41bbde-5b0c-4ba5-b0b7-7dc7c0984e46");
+    expect(routeDiscordComponent("cdc:chat:resume:selected", ["../etc"])).toBeNull();
     expect(routeDiscordComponent("cdc:sync:mode:on-chat")).toBe("sync mode on-chat");
     expect(routeDiscordComponent("cdc:sync:mode:realtime")).toBe("sync mode realtime");
     expect(routeDiscordComponent("cdc:chat:new:general")).toBe("chat new");

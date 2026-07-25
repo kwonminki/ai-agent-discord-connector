@@ -65,7 +65,9 @@ export type CodexPromptProgressEvent =
   | SharedAgentPromptProgressEvent
   | { type: "codex-event"; eventType: string };
 
-export type ClaudePromptProgressEvent = SharedAgentPromptProgressEvent;
+export type ClaudePromptProgressEvent =
+  | SharedAgentPromptProgressEvent
+  | { type: "agent-thought"; text: string };
 export type AgentPromptProgressEvent = CodexPromptProgressEvent | ClaudePromptProgressEvent;
 
 export type CodexPromptApprovalRequest = CodexApprovalRequest;

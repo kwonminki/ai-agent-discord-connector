@@ -644,7 +644,7 @@ describe("createDiscordMessageHandler", () => {
     await active;
   });
 
-  it("keeps explicit queue prompts pending and mentions completion only after the queue drains", async () => {
+  it("keeps explicit queue prompts pending and mentions every completion with the remaining queue size", async () => {
     let firstPromptWaiting = false;
     let finishFirstPrompt: (value: unknown) => void = () => {
       throw new Error("first prompt completion was not initialized");
@@ -740,7 +740,7 @@ describe("createDiscordMessageHandler", () => {
     await second;
 
     expect(submitCodexPrompt).toHaveBeenCalledTimes(2);
-    expect(sendTextMessage).toHaveBeenCalledTimes(3);
+    expect(sendTextMessage).toHaveBeenCalledTimes(4);
     expect(sendTextMessage).toHaveBeenNthCalledWith(
       1,
       "thread-1",
@@ -752,13 +752,19 @@ describe("createDiscordMessageHandler", () => {
     expect(sendTextMessage).toHaveBeenNthCalledWith(
       2,
       "thread-1",
+      "**Codex 작업 완료** — 대기열 1개를 이어서 진행합니다",
+      { mentionRoleIds: ["role-operator"] },
+    );
+    expect(sendTextMessage).toHaveBeenNthCalledWith(
+      3,
+      "thread-1",
       expect.objectContaining({
         content: expect.stringContaining("**Codex 작업 완료**"),
         embeds: [expect.objectContaining({ title: "답변", description: expect.stringContaining("두 번째 요청까지 처리했습니다.") })],
       }),
     );
     expect(sendTextMessage).toHaveBeenNthCalledWith(
-      3,
+      4,
       "thread-1",
       "**Codex 작업 완료**",
       { mentionRoleIds: ["role-operator"] },
@@ -3145,7 +3151,7 @@ describe("createDiscordMessageHandler", () => {
     expect(edits.at(-1)).toEqual(expect.objectContaining({
       content: expect.stringContaining("최종 답변을 아래 새 메시지에 표시했습니다."),
     }));
-    expect(sendTextMessage).toHaveBeenCalledTimes(3);
+    expect(sendTextMessage).toHaveBeenCalledTimes(4);
     expect(sendTextMessage).toHaveBeenNthCalledWith(
       1,
       "thread-1",
@@ -3158,12 +3164,20 @@ describe("createDiscordMessageHandler", () => {
       2,
       "thread-1",
       expect.objectContaining({
+        allowedMentions: { parse: [] },
+        content: expect.stringContaining("수정을 완료했습니다."),
+      }),
+    );
+    expect(sendTextMessage).toHaveBeenNthCalledWith(
+      3,
+      "thread-1",
+      expect.objectContaining({
         content: expect.stringContaining("**Codex 작업 완료**"),
         embeds: [expect.objectContaining({ title: "답변", description: expect.stringContaining("수정을 완료했습니다.") })],
       }),
     );
     expect(sendTextMessage).toHaveBeenNthCalledWith(
-      3,
+      4,
       "thread-1",
       "**Codex 작업 완료**",
       { mentionRoleIds: ["role-operator"] },
@@ -3222,16 +3236,177 @@ describe("createDiscordMessageHandler", () => {
       2,
       "claude-thread-1",
       expect.objectContaining({
-        content: expect.stringContaining("**Claude Code 작업 완료**"),
-        embeds: [expect.objectContaining({ title: "답변", description: expect.stringContaining("로그 확인을 마쳤습니다.") })],
+        allowedMentions: { parse: [] },
+        content: expect.stringContaining("로그 확인을 마쳤습니다."),
       }),
     );
     expect(sendTextMessage).toHaveBeenNthCalledWith(
       3,
       "claude-thread-1",
+      expect.objectContaining({
+        content: expect.stringContaining("**Claude Code 작업 완료**"),
+        embeds: [expect.objectContaining({ title: "답변", description: expect.stringContaining("로그 확인을 마쳤습니다.") })],
+      }),
+    );
+    expect(sendTextMessage).toHaveBeenNthCalledWith(
+      4,
+      "claude-thread-1",
       "**Claude Code 작업 완료**",
       { mentionRoleIds: ["role-operator"] },
     );
+  });
+
+  it("blocks plain messages in the Claude main channel and offers new-chat buttons", async () => {
+    const submitClaudePrompt = vi.fn();
+    const replies: unknown[] = [];
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...claudeChannelContext,
+        agentMain: "claude",
+        discordDeliveryMode: "channel",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt: vi.fn(),
+      submitClaudePrompt,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    await handleMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "claude-main-1",
+      content: "안녕, 이 폴더 정리해줘",
+      roleIds: ["role-operator"],
+      guild: {
+        createCategory: vi.fn(),
+        createTextChannel: vi.fn(),
+        sendTextMessage: vi.fn(),
+      },
+      reply: async (payload) => {
+        replies.push(payload);
+        return { edit: async () => undefined };
+      },
+    });
+
+    expect(submitClaudePrompt).not.toHaveBeenCalled();
+    const guidance = replies[0] as { content?: string; components?: Array<{ components: Array<{ custom_id: string }> }> };
+    expect(guidance.content).toContain("스레드 단위로 관리");
+    const buttonIds = (guidance.components ?? []).flatMap((row) => row.components.map((component) => component.custom_id));
+    expect(buttonIds).toEqual(expect.arrayContaining(["cdc:chat:new:current", "cdc:cwdpick:open"]));
+
+    // The Codex main channel gets the same guidance for plain prompts.
+    const submitCodexPrompt = vi.fn();
+    const codexReplies: unknown[] = [];
+    const handleCodexMainMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        agentMain: "codex",
+        discordDeliveryMode: "channel",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    await handleCodexMainMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "codex-main-1",
+      content: "codex 이 폴더 정리해줘",
+      roleIds: ["role-operator"],
+      guild: { createCategory: vi.fn(), createTextChannel: vi.fn(), sendTextMessage: vi.fn() },
+      reply: async (payload) => {
+        codexReplies.push(payload);
+        return { edit: async () => undefined };
+      },
+    });
+    expect(submitCodexPrompt).not.toHaveBeenCalled();
+    expect((codexReplies[0] as { content?: string }).content).toContain("Codex 세션은 스레드 단위로 관리");
+
+    // Session threads keep working as before.
+    const threadPrompt = vi.fn().mockResolvedValue({
+      jobId: "job-1",
+      result: { status: "completed", finalMessage: "done", sessionId: "claude-session-1" },
+    });
+    const handleThreadMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...claudeChannelContext,
+        discordDeliveryMode: "thread",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt: vi.fn(),
+      submitClaudePrompt: threadPrompt,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    await handleThreadMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "claude-thread-1",
+      content: "이어서 진행해줘",
+      roleIds: ["role-operator"],
+      guild: { createCategory: vi.fn(), createTextChannel: vi.fn(), sendTextMessage: vi.fn() },
+      reply: async () => ({ edit: async () => undefined }),
+    });
+    expect(threadPrompt).toHaveBeenCalled();
+  });
+
+  it("posts long Claude thoughts in a plain channel, split across messages instead of truncated", async () => {
+    const sendTextMessage = vi.fn().mockResolvedValue({ id: "message-1" });
+    const longThought = "긴 생각 조각입니다. ".repeat(250).trim();
+    const submitClaudePrompt = vi.fn(async (input) => {
+      await input.onProgress?.({ type: "agent-thought", text: longThought });
+      return {
+        jobId: "job-1",
+        result: {
+          status: "completed",
+          finalMessage: "확인 완료",
+          sessionId: "claude-session-1",
+        },
+      };
+    });
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...claudeChannelContext,
+        discordDeliveryMode: "channel",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt: vi.fn(),
+      submitClaudePrompt,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    await handleMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "claude-channel-1",
+      content: "분석해줘",
+      roleIds: ["role-operator"],
+      guild: {
+        createCategory: vi.fn(),
+        createTextChannel: vi.fn(),
+        sendTextMessage,
+      },
+      reply: async () => ({ edit: async () => undefined }),
+    });
+
+    const thoughtMessages = sendTextMessage.mock.calls.filter(([, payload]) =>
+      typeof payload === "object" &&
+      payload !== null &&
+      typeof (payload as { content?: unknown }).content === "string" &&
+      ((payload as { content: string }).content.includes("Claude Code 생각")),
+    );
+    expect(thoughtMessages.length).toBeGreaterThanOrEqual(2);
+    expect(thoughtMessages[0]?.[1]).toEqual(expect.objectContaining({
+      content: expect.stringContaining("긴 생각 조각입니다."),
+    }));
+    expect((thoughtMessages[1]?.[1] as { content: string }).content).toContain("(계속)");
+    const combined = thoughtMessages
+      .map(([, payload]) => (payload as { content: string }).content)
+      .join("\n");
+    expect(combined.length).toBeGreaterThan(2_000);
   });
 
   it.each([

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 export type ClaudeRunnerProgressEvent =
   | { type: "thread-started"; sessionId: string }
   | { type: "agent-message"; text: string }
+  | { type: "agent-thought"; text: string }
   | { type: "operation-progress"; label: string; detail?: string; eventType: string };
 
 export interface RunClaudePromptInput {
@@ -18,6 +19,8 @@ export interface RunClaudePromptInput {
   permissionMode?: string | null;
   model?: string | null;
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
+  settings?: string | null;
+  persistentSession?: boolean | null;
   onProgress?: (event: ClaudeRunnerProgressEvent) => Promise<void> | void;
   signal?: AbortSignal;
 }
@@ -37,11 +40,24 @@ export interface ClaudeTurnControlResult {
   threadId?: string;
 }
 
+export interface ClaudeSessionIdleNotification {
+  controlKey: string;
+  sessionId: string | null;
+  message: string;
+  isError: boolean;
+  at: string;
+}
+
+type ClaudeSessionIdleNotificationSink = (
+  notification: ClaudeSessionIdleNotification,
+) => Promise<void> | void;
+
 interface ActiveClaudeTurn {
   send(content: string): Promise<ClaudeTurnControlResult>;
   interrupt(): ClaudeTurnControlResult;
 }
 
+const STDERR_TAIL_CHARS = 8_192;
 const activeClaudeTurns = new Map<string, ActiveClaudeTurn>();
 
 export async function steerActiveClaudeTurn(
@@ -81,6 +97,10 @@ function resolvePermissionMode(input: { permissionMode?: string | null }): strin
   return input.permissionMode?.trim() || process.env.CODEX_DISCORD_CLAUDE_PERMISSION_MODE?.trim() || "bypassPermissions";
 }
 
+function resolveClaudeSettings(input: { settings?: string | null }): string | null {
+  return input.settings?.trim() || process.env.CODEX_DISCORD_CLAUDE_SETTINGS?.trim() || null;
+}
+
 function claudeArgs(input: RunClaudePromptInput): string[] {
   const args = [
     "-p",
@@ -93,6 +113,7 @@ function claudeArgs(input: RunClaudePromptInput): string[] {
     "--include-hook-events",
   ];
   const permissionMode = resolvePermissionMode(input);
+  const settings = resolveClaudeSettings(input);
 
   if (input.sessionId?.trim()) {
     args.push("--resume", input.sessionId.trim());
@@ -116,6 +137,10 @@ function claudeArgs(input: RunClaudePromptInput): string[] {
 
   if (permissionMode) {
     args.push("--permission-mode", permissionMode);
+  }
+
+  if (settings) {
+    args.push("--settings", settings);
   }
 
   return args;
@@ -216,6 +241,25 @@ function textFromClaudeContent(content: unknown): string {
     .trim();
 }
 
+function thinkingFromClaudeContent(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+
+      const record = item as Record<string, unknown>;
+      return record.type === "thinking" && typeof record.thinking === "string" ? record.thinking : "";
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
 function toolProgressFromClaudeContent(content: unknown): ClaudeRunnerProgressEvent | null {
   if (!Array.isArray(content)) {
     return null;
@@ -301,10 +345,12 @@ function parseClaudeStreamLine(line: string): {
     const message = parsed.message as Record<string, unknown> | undefined;
     const content = message?.content;
     const text = textFromClaudeContent(content);
+    const thinking = thinkingFromClaudeContent(content);
     const toolProgress = toolProgressFromClaudeContent(content);
     const stopReason = typeof message?.stop_reason === "string" ? message.stop_reason : null;
 
     const progressEvents: ClaudeRunnerProgressEvent[] = [
+      ...(thinking ? [{ type: "agent-thought" as const, text: thinking }] : []),
       ...(toolProgress ? [toolProgress] : []),
       ...(text ? [{ type: "agent-message" as const, text }] : []),
     ];
@@ -352,7 +398,640 @@ function parseClaudeStreamLine(line: string): {
   return { sessionId };
 }
 
-export async function runClaudePrompt(input: RunClaudePromptInput): Promise<RunClaudePromptResult> {
+type ParsedClaudeStreamEvent = NonNullable<ReturnType<typeof parseClaudeStreamLine>>;
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Persistent session pool
+//
+// One idle Claude Code process is kept per controlKey (Discord channel) so
+// that in-session state survives between Discord turns: run_in_background
+// tasks keep running, CronCreate/ScheduleWakeup jobs actually fire, and the
+// turns they trigger while nobody is chatting are forwarded through the idle
+// notification sink.
+// ---------------------------------------------------------------------------
+
+const persistentSessions = new Map<string, PersistentClaudeSession>();
+
+let idleNotificationSink: ClaudeSessionIdleNotificationSink | null = null;
+
+export function setClaudeSessionIdleNotificationSink(
+  sink: ClaudeSessionIdleNotificationSink | null,
+): void {
+  idleNotificationSink = sink;
+}
+
+export function claudePersistentSessionCount(): number {
+  return persistentSessions.size;
+}
+
+export async function disposeClaudePersistentSessions(reason = "shutdown"): Promise<void> {
+  const sessions = [...persistentSessions.values()];
+  persistentSessions.clear();
+  await Promise.allSettled(sessions.map((session) => session.dispose(reason)));
+}
+
+function persistentSessionsEnabled(input: RunClaudePromptInput): boolean {
+  if (!input.controlKey?.trim()) {
+    return false;
+  }
+
+  if (typeof input.persistentSession === "boolean") {
+    return input.persistentSession;
+  }
+
+  const flag = process.env.CODEX_DISCORD_CLAUDE_PERSISTENT?.trim().toLowerCase() ?? "";
+  return !["0", "false", "off", "no"].includes(flag);
+}
+
+function persistentSessionSignature(input: RunClaudePromptInput): string {
+  return JSON.stringify([
+    resolveClaudeCommand(input),
+    input.cwd,
+    resolvePermissionMode(input) ?? "",
+    input.model?.trim() ?? "",
+    input.effort ?? "",
+    input.sessionName?.trim() ?? "",
+    resolveClaudeSettings(input) ?? "",
+  ]);
+}
+
+async function enforcePersistentSessionLimit(preserveKey: string): Promise<void> {
+  const maxSessions = Math.max(1, positiveIntegerEnv("CODEX_DISCORD_CLAUDE_MAX_SESSIONS", 4));
+
+  while (persistentSessions.size > maxSessions) {
+    let victim: PersistentClaudeSession | null = null;
+
+    for (const session of persistentSessions.values()) {
+      if (session.controlKey === preserveKey || session.isBusy()) {
+        continue;
+      }
+      if (!victim || session.lastUsedAt < victim.lastUsedAt) {
+        victim = session;
+      }
+    }
+
+    if (!victim) {
+      break;
+    }
+
+    await victim.dispose("evicted");
+  }
+}
+
+interface PersistentTurnState {
+  input: RunClaudePromptInput;
+  reusedSession: boolean;
+  settled: boolean;
+  interrupted: boolean;
+  lastAssistantMessage: string;
+  finalMessage: string;
+  resultWasError: boolean;
+  progressTasks: Promise<void>[];
+  timeout: NodeJS.Timeout | null;
+  forceKillTimeout: NodeJS.Timeout | null;
+  registryEntry: ActiveClaudeTurn | null;
+  onAbort: () => void;
+  resolve: (result: RunClaudePromptResult) => void;
+}
+
+class PersistentClaudeSession {
+  readonly controlKey: string;
+  readonly signature: string;
+  sessionId: string | null;
+  lastUsedAt = Date.now();
+  disposed = false;
+  exited = false;
+
+  private readonly child: ReturnType<typeof spawn>;
+  private readonly claudeCommand: string;
+  private spawnFailureResult: RunClaudePromptResult | null = null;
+  private lineBuffer = "";
+  private stderrTail = "";
+  private activeTurn: PersistentTurnState | null = null;
+  private turnChain: Promise<void> = Promise.resolve();
+  private idleAssistantText = "";
+  private idleTtlTimer: NodeJS.Timeout | null = null;
+  private disposeKillTimer: NodeJS.Timeout | null = null;
+  private exitWaiters: Array<() => void> = [];
+
+  constructor(input: RunClaudePromptInput, controlKey: string, signature: string) {
+    this.controlKey = controlKey;
+    this.signature = signature;
+    this.sessionId = input.sessionId?.trim() || null;
+    this.claudeCommand = resolveClaudeCommand(input);
+    this.child = spawn(this.claudeCommand, claudeArgs(input), {
+      cwd: input.cwd,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    this.child.once("error", (error) => {
+      this.spawnFailureResult = spawnFailure(this.claudeCommand, error as NodeJS.ErrnoException);
+      this.exited = true;
+      this.disposed = true;
+      this.removeFromPool();
+      this.cancelIdleTtl();
+      const turn = this.activeTurn;
+      if (turn) {
+        this.settleTurn(turn, this.spawnFailureResult);
+      }
+      this.flushExitWaiters();
+    });
+
+    this.child.stdin?.on("error", () => {
+      // Write failures surface through the per-write callbacks; this handler
+      // only prevents an unhandled EPIPE from crashing the host process.
+    });
+
+    this.child.stdout?.on("data", (chunk: Buffer) => {
+      this.lineBuffer += chunk.toString("utf8");
+      const lines = this.lineBuffer.split(/\r?\n/);
+      this.lineBuffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.trim()) {
+          this.handleLine(line);
+        }
+      }
+    });
+
+    this.child.stderr?.on("data", (chunk: Buffer) => {
+      this.stderrTail = `${this.stderrTail}${chunk.toString("utf8")}`.slice(-STDERR_TAIL_CHARS);
+    });
+
+    this.child.once("close", (code) => {
+      this.exited = true;
+      if (this.lineBuffer.trim()) {
+        const remainder = this.lineBuffer.trim();
+        this.lineBuffer = "";
+        this.handleLine(remainder);
+      }
+      this.removeFromPool();
+      this.cancelIdleTtl();
+      if (this.disposeKillTimer) {
+        clearTimeout(this.disposeKillTimer);
+        this.disposeKillTimer = null;
+      }
+
+      const turn = this.activeTurn;
+      if (turn) {
+        if (turn.interrupted) {
+          this.settleTurn(turn, this.interruptedResult(turn));
+        } else {
+          this.settleTurn(turn, {
+            status: "failed",
+            finalMessage: turn.finalMessage || turn.lastAssistantMessage,
+            sessionId: this.sessionId,
+            stderr: this.stderrTail.trim(),
+            exitCode: code,
+            errorCode: turn.reusedSession ? "CLAUDE_SESSION_LOST" : "CLAUDE_CLI_FAILED",
+          });
+        }
+      }
+
+      this.flushExitWaiters();
+    });
+  }
+
+  isBusy(): boolean {
+    return this.activeTurn !== null;
+  }
+
+  submitTurn(input: RunClaudePromptInput, reusedSession: boolean): Promise<RunClaudePromptResult> {
+    this.lastUsedAt = Date.now();
+    this.cancelIdleTtl();
+    const run = this.turnChain.then(() => this.executeTurn(input, reusedSession));
+    this.turnChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  async dispose(reason: string): Promise<void> {
+    this.disposed = true;
+    this.cancelIdleTtl();
+    this.removeFromPool();
+
+    const turn = this.activeTurn;
+    if (turn && !turn.settled) {
+      turn.interrupted = true;
+      this.settleTurn(turn, this.interruptedResult(turn));
+    }
+
+    if (this.exited) {
+      return;
+    }
+
+    try {
+      this.child.stdin?.end();
+    } catch {
+      // The pipe may already be gone; escalation below still applies.
+    }
+
+    if (!this.disposeKillTimer) {
+      this.disposeKillTimer = setTimeout(() => {
+        this.killChild("SIGTERM");
+      }, 1_500);
+      this.disposeKillTimer.unref();
+    }
+
+    void reason;
+    await this.waitForExit(8_000);
+  }
+
+  private waitForExit(timeoutMs: number): Promise<void> {
+    if (this.exited) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.killChild("SIGKILL");
+        resolve();
+      }, timeoutMs);
+      timer.unref();
+      this.exitWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  private flushExitWaiters(): void {
+    for (const waiter of this.exitWaiters.splice(0)) {
+      waiter();
+    }
+  }
+
+  private executeTurn(input: RunClaudePromptInput, reusedSession: boolean): Promise<RunClaudePromptResult> {
+    return new Promise((resolve) => {
+      if (input.signal?.aborted) {
+        resolve({
+          status: "failed",
+          finalMessage: "",
+          sessionId: this.sessionId,
+          stderr: "Claude Code prompt was interrupted.",
+          exitCode: null,
+          errorCode: "CLAUDE_PROMPT_INTERRUPTED",
+        });
+        return;
+      }
+
+      if (this.spawnFailureResult) {
+        resolve(this.spawnFailureResult);
+        return;
+      }
+
+      if (this.disposed || this.exited) {
+        resolve({
+          status: "failed",
+          finalMessage: "",
+          sessionId: this.sessionId,
+          stderr: "Claude Code session is no longer available.",
+          exitCode: null,
+          errorCode: reusedSession ? "CLAUDE_SESSION_LOST" : "CLAUDE_CLI_FAILED",
+        });
+        return;
+      }
+
+      const turn: PersistentTurnState = {
+        input,
+        reusedSession,
+        settled: false,
+        interrupted: false,
+        lastAssistantMessage: "",
+        finalMessage: "",
+        resultWasError: false,
+        progressTasks: [],
+        timeout: null,
+        forceKillTimeout: null,
+        registryEntry: null,
+        onAbort: () => {},
+        resolve,
+      };
+
+      this.activeTurn = turn;
+      turn.onAbort = () => {
+        this.interruptTurn(turn);
+      };
+      input.signal?.addEventListener("abort", turn.onAbort, { once: true });
+
+      const registryEntry: ActiveClaudeTurn = {
+        send: async (content) => {
+          try {
+            await this.writeTurnInput(content);
+            return {
+              status: "accepted",
+              message: "Claude Code steering was accepted.",
+              ...(this.sessionId ? { threadId: this.sessionId } : {}),
+            };
+          } catch (error) {
+            return {
+              status: "failed",
+              message: error instanceof Error ? error.message : "Claude Code steering failed.",
+            };
+          }
+        },
+        interrupt: () => {
+          this.interruptTurn(turn);
+          return {
+            status: "accepted",
+            message: "Claude Code interrupt requested.",
+            ...(this.sessionId ? { threadId: this.sessionId } : {}),
+          };
+        },
+      };
+      turn.registryEntry = registryEntry;
+      activeClaudeTurns.set(this.controlKey, registryEntry);
+
+      if (input.timeoutMs > 0) {
+        turn.timeout = setTimeout(() => {
+          this.disposed = true;
+          this.removeFromPool();
+          this.killChild("SIGTERM");
+          turn.forceKillTimeout = setTimeout(() => {
+            this.killChild("SIGKILL");
+          }, 5_000);
+          turn.forceKillTimeout.unref();
+          this.settleTurn(turn, {
+            status: "failed",
+            finalMessage: "",
+            sessionId: this.sessionId,
+            stderr: "Claude Code prompt timed out.",
+            exitCode: null,
+            errorCode: "CLAUDE_PROMPT_TIMEOUT",
+          });
+        }, input.timeoutMs);
+      }
+
+      void this.writeTurnInput(input.prompt).catch((error) => {
+        const message = error instanceof Error ? error.message : "Claude Code input failed.";
+        this.disposed = true;
+        this.removeFromPool();
+        this.killChild("SIGTERM");
+        this.settleTurn(turn, {
+          status: "failed",
+          finalMessage: turn.lastAssistantMessage,
+          sessionId: this.sessionId,
+          stderr: message,
+          exitCode: null,
+          errorCode: reusedSession ? "CLAUDE_SESSION_LOST" : "CLAUDE_CLI_FAILED",
+        });
+      });
+    });
+  }
+
+  private writeTurnInput(content: string): Promise<void> {
+    const normalizedContent = content.trim();
+    if (!normalizedContent) {
+      return Promise.reject(new Error("Claude Code steering content is empty."));
+    }
+
+    const turn = this.activeTurn;
+    if (
+      !turn ||
+      turn.settled ||
+      turn.interrupted ||
+      this.exited ||
+      !this.child.stdin ||
+      this.child.stdin.destroyed ||
+      !this.child.stdin.writable
+    ) {
+      return Promise.reject(new Error("Claude Code input stream is no longer writable."));
+    }
+
+    return new Promise<void>((writeResolve, writeReject) => {
+      this.child.stdin?.write(claudeUserMessage(normalizedContent), (error) => {
+        if (error) {
+          writeReject(error);
+          return;
+        }
+        writeResolve();
+      });
+    });
+  }
+
+  private interruptTurn(turn: PersistentTurnState): void {
+    if (turn.settled || turn.interrupted) {
+      return;
+    }
+
+    turn.interrupted = true;
+    this.disposed = true;
+    this.removeFromPool();
+    this.killChild("SIGTERM");
+    turn.forceKillTimeout = setTimeout(() => {
+      this.killChild("SIGKILL");
+    }, 5_000);
+    turn.forceKillTimeout.unref();
+  }
+
+  private interruptedResult(turn: PersistentTurnState): RunClaudePromptResult {
+    return {
+      status: "failed",
+      finalMessage: turn.lastAssistantMessage,
+      sessionId: this.sessionId,
+      stderr: "Claude Code prompt was interrupted.",
+      exitCode: null,
+      errorCode: "CLAUDE_PROMPT_INTERRUPTED",
+    };
+  }
+
+  private settleTurn(turn: PersistentTurnState, result: RunClaudePromptResult): void {
+    if (turn.settled) {
+      return;
+    }
+
+    turn.settled = true;
+    if (turn.timeout) {
+      clearTimeout(turn.timeout);
+      turn.timeout = null;
+    }
+    turn.input.signal?.removeEventListener("abort", turn.onAbort);
+    if (turn.registryEntry && activeClaudeTurns.get(this.controlKey) === turn.registryEntry) {
+      activeClaudeTurns.delete(this.controlKey);
+    }
+    if (this.activeTurn === turn) {
+      this.activeTurn = null;
+    }
+    this.lastUsedAt = Date.now();
+    if (!this.disposed && !this.exited) {
+      this.scheduleIdleTtl();
+    }
+
+    void Promise.allSettled(turn.progressTasks).then(() => turn.resolve(result));
+  }
+
+  private handleLine(line: string): void {
+    const event = parseClaudeStreamLine(line);
+
+    if (!event) {
+      return;
+    }
+
+    if (event.sessionId) {
+      this.sessionId = event.sessionId;
+    }
+
+    const turn = this.activeTurn;
+    if (!turn) {
+      this.handleIdleEvent(event);
+      return;
+    }
+
+    if (event.finalMessage) {
+      turn.finalMessage = event.finalMessage;
+    }
+
+    if (event.isResult) {
+      turn.resultWasError = event.isError === true;
+    }
+
+    for (const progress of event.progressEvents ?? []) {
+      if (progress.type === "agent-message") {
+        turn.lastAssistantMessage = progress.text;
+      }
+
+      if (turn.input.onProgress) {
+        turn.progressTasks.push(Promise.resolve(turn.input.onProgress(progress)));
+      }
+    }
+
+    if (event.isResult) {
+      const failed = turn.resultWasError;
+      this.settleTurn(turn, {
+        status: failed ? "failed" : "completed",
+        finalMessage: turn.finalMessage || turn.lastAssistantMessage,
+        sessionId: this.sessionId,
+        stderr: failed ? this.stderrTail.trim() : "",
+        exitCode: null,
+        ...(failed ? { errorCode: "CLAUDE_CLI_FAILED" } : {}),
+      });
+    }
+  }
+
+  private handleIdleEvent(event: ParsedClaudeStreamEvent): void {
+    for (const progress of event.progressEvents ?? []) {
+      if (progress.type === "agent-message") {
+        this.idleAssistantText = progress.text;
+      }
+    }
+
+    if (!event.isResult) {
+      return;
+    }
+
+    const message = (event.finalMessage || this.idleAssistantText || "").trim();
+    this.idleAssistantText = "";
+
+    if (!message || !idleNotificationSink) {
+      return;
+    }
+
+    const notification: ClaudeSessionIdleNotification = {
+      controlKey: this.controlKey,
+      sessionId: this.sessionId,
+      message,
+      isError: event.isError === true,
+      at: new Date().toISOString(),
+    };
+
+    try {
+      void Promise.resolve(idleNotificationSink(notification)).catch((error) => {
+        console.warn("claude idle notification sink failed", error);
+      });
+    } catch (error) {
+      console.warn("claude idle notification sink failed", error);
+    }
+  }
+
+  private scheduleIdleTtl(): void {
+    this.cancelIdleTtl();
+    const ttlMs = positiveIntegerEnv("CODEX_DISCORD_CLAUDE_SESSION_TTL_MS", 0);
+    if (ttlMs <= 0) {
+      return;
+    }
+
+    this.idleTtlTimer = setTimeout(() => {
+      void this.dispose("idle-ttl");
+    }, ttlMs);
+    this.idleTtlTimer.unref();
+  }
+
+  private cancelIdleTtl(): void {
+    if (this.idleTtlTimer) {
+      clearTimeout(this.idleTtlTimer);
+      this.idleTtlTimer = null;
+    }
+  }
+
+  private removeFromPool(): void {
+    if (persistentSessions.get(this.controlKey) === this) {
+      persistentSessions.delete(this.controlKey);
+    }
+  }
+
+  private killChild(signal: NodeJS.Signals): void {
+    try {
+      this.child.kill(signal);
+    } catch {
+      // The process may already be gone.
+    }
+  }
+}
+
+async function runViaPersistentSession(input: RunClaudePromptInput): Promise<RunClaudePromptResult> {
+  const controlKey = input.controlKey?.trim() ?? "";
+  const signature = persistentSessionSignature(input);
+  const requestedSessionId = input.sessionId?.trim() || null;
+  const existing = persistentSessions.get(controlKey);
+
+  if (existing) {
+    const reusable =
+      !existing.disposed &&
+      !existing.exited &&
+      !input.forkSession &&
+      requestedSessionId !== null &&
+      existing.sessionId === requestedSessionId &&
+      existing.signature === signature;
+
+    if (reusable) {
+      const result = await existing.submitTurn(input, true);
+      if (result.errorCode !== "CLAUDE_SESSION_LOST") {
+        return result;
+      }
+      // The pooled process died between turns (host restart, crash, TTL race).
+      // Fall through and resume the same conversation in a fresh process.
+    } else {
+      await existing.dispose("superseded").catch(() => undefined);
+    }
+  }
+
+  if (input.signal?.aborted) {
+    return {
+      status: "failed",
+      finalMessage: "",
+      sessionId: requestedSessionId,
+      stderr: "Claude Code prompt was interrupted.",
+      exitCode: null,
+      errorCode: "CLAUDE_PROMPT_INTERRUPTED",
+    };
+  }
+
+  const session = new PersistentClaudeSession(input, controlKey, signature);
+  persistentSessions.set(controlKey, session);
+  const turn = session.submitTurn(input, false);
+  void enforcePersistentSessionLimit(controlKey).catch(() => undefined);
+  return turn;
+}
+
+async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClaudePromptResult> {
   const claudeCommand = resolveClaudeCommand(input);
   const args = claudeArgs(input);
   const stdoutChunks: Buffer[] = [];
@@ -592,4 +1271,12 @@ export async function runClaudePrompt(input: RunClaudePromptInput): Promise<RunC
       });
     });
   });
+}
+
+export async function runClaudePrompt(input: RunClaudePromptInput): Promise<RunClaudePromptResult> {
+  if (persistentSessionsEnabled(input)) {
+    return runViaPersistentSession(input);
+  }
+
+  return runClaudePromptOnce(input);
 }

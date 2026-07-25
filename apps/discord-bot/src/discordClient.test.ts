@@ -20,6 +20,33 @@ import {
 } from "./responses.js";
 
 describe("attachDiscordMessageHandler", () => {
+  it("ignores Discord system messages such as channel renames", async () => {
+    const handlers = new Map<string, (message: unknown) => void>();
+    const client = {
+      on: vi.fn((eventName: string, handler: (message: unknown) => void) => {
+        handlers.set(eventName, handler);
+        return client;
+      }),
+    };
+    const handleMessage = vi.fn().mockResolvedValue(undefined);
+
+    attachDiscordMessageHandler(client, handleMessage);
+    handlers.get("messageCreate")?.({
+      id: "system-message-1",
+      channelId: "claude-thread-1",
+      content: "이름바꾸기",
+      system: true,
+      attachments: new Map(),
+      author: { bot: false, id: "discord-user-1" },
+      member: { roles: { cache: new Map() } },
+      reply: vi.fn(),
+      guild: { channels: { fetch: vi.fn() } },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+
   it("accepts trusted relay requests only through the private control channel", async () => {
     const handlers = new Map<string, (message: unknown) => void>();
     const client = {

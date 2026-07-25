@@ -135,6 +135,12 @@ export function createDirectWorkerClient(options: {
     async markDelivered(jobId: string): Promise<void> {
       await store.markDelivered(jobId);
     },
+    async readPendingClaudeSessionNotifications() {
+      return store.readPendingClaudeSessionNotifications();
+    },
+    async ackClaudeSessionNotifications(controlKey: string, deliveredCount: number): Promise<void> {
+      await store.ackClaudeSessionNotifications(controlKey, deliveredCount);
+    },
     async executionState(): Promise<{ activeCount: number; pendingCount: number }> {
       let activeCount = 0;
       let pendingCount = 0;

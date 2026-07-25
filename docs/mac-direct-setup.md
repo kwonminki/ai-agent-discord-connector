@@ -192,6 +192,57 @@ claude 이어서 테스트 계획도 잡아줘
 
 If `--claude-channel-id` is configured, that Discord channel becomes Claude Code-only: bare natural-language messages go to Claude Code, while shell commands still use the `!` prefix. Running `/chat-new` or `chat new` there creates a Discord thread under the Claude Code channel, and messages inside that thread continue to use Claude Code. The connector runs Claude Code headless with stream JSON output and remembers the returned Claude session ID per Discord channel for later resumes. Set `CODEX_DISCORD_CLAUDE_COMMAND` if `claude` is not on the service `PATH`, and set `CODEX_DISCORD_CLAUDE_PERMISSION_MODE` to override the default `bypassPermissions` mode. Permission approval buttons and Claude hook-based notifications for externally started Claude sessions are not included in the MVP direct integration.
 
+### Persistent Claude Code sessions
+
+By default the direct worker keeps one idle Claude Code process per Discord channel between turns instead of restarting the CLI on every message. This is what makes in-session state survive across Discord messages:
+
+- `run_in_background` shell tasks keep running between turns.
+- In-session schedules (CronCreate one-shots/recurring jobs, ScheduleWakeup) actually fire while the channel is quiet. Their results are posted back to the channel as a "Claude Code 세션 알림" message by the bot's idle-notification poller.
+- Follow-up turns reuse the warm process, so there is no `--resume` restart cost per message.
+
+Environment knobs (worker process):
+
+- `CODEX_DISCORD_CLAUDE_PERSISTENT` — set to `0`/`false` to restore the old process-per-prompt behavior.
+- `CODEX_DISCORD_CLAUDE_SESSION_TTL_MS` — idle time after which a pooled process is shut down (default `0` = keep alive indefinitely). Note that shutting the process down also discards its in-session schedules.
+- `CODEX_DISCORD_CLAUDE_MAX_SESSIONS` — maximum number of pooled processes across channels (default `4`, least-recently-used channel is evicted first).
+- `CODEX_DISCORD_CLAUDE_SETTINGS` — path to a settings JSON file (or an inline JSON string) passed to Claude Code via `--settings`, e.g. to pre-allow sandbox network domains so headless commands do not stall on domain approval prompts:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "network": {
+      "allowedDomains": ["github.com", "*.githubusercontent.com", "registry.npmjs.org"]
+    },
+    "filesystem": {
+      "allowWrite": ["~/Downloads/agent-work"]
+    }
+  }
+}
+```
+
+Caveats: interrupting a turn or restarting the worker kills the pooled process; the next message transparently resumes the same conversation with `--resume`, but in-session schedules do not survive the restart (they are in-memory by design, and recurring jobs also auto-expire after 7 days). Model/effort changes for a channel take effect by respawning the pooled process with `--resume`. In relay (hub) mode the persistent pool still works, but idle-turn notifications are only delivered in direct mode. Do not try to outlive the session with `setsid`/`nohup`/`tmux` from inside Claude — the Claude Code sandbox blocks detached processes; the persistent session is the supported way to keep work running.
+
+### Persistent Codex app-server
+
+The worker also keeps one `codex app-server` process per (codex command, `CODEX_HOME`) and reuses it for every prompt instead of booting and killing a server per Discord message. The server multiplexes conversation threads, so concurrent channels share the same process. If the pooled server dies between prompts, the next prompt spawns a replacement and retries once automatically; the worker shuts pooled servers down on stop. Set `CODEX_DISCORD_CODEX_APP_SERVER_PERSISTENT=0` to restore the old server-per-prompt behavior. Prompts that specify an external `appServerUrl`/`appServerSocketPath` bypass the pool entirely.
+
+### Directory picker for new chats
+
+`/chat-new location:browse` opens an interactive folder picker (direct mode only): a select menu moves into subfolders, `⬆️ 상위 폴더`/`🏠 홈` buttons move up or jump to the home directory, pagination handles folders with many children, and `✅ 이 폴더로 새 채팅` creates the session channel at the browsed path. `name`/`prompt` options given to `/chat-new` are carried through the picker and applied on confirm (a very long prompt is dropped with a notice). The picker edits its own message in place and keeps its state in the message content, so it keeps working across bot restarts. Hidden folders are not listed. Renaming session channels or threads in Discord is safe — the connector routes everything by channel id and never renames them back.
+
+### Reopening deleted session threads
+
+`/chat-resume` (main channel, direct mode) lists the most recent Claude Code sessions — including connector-started ones — in a select menu. Picking one recreates a thread under the Claude Code channel linked to that session, so the conversation continues where it left off even if the original thread was deleted in Discord. If a live thread already exists for the session, the command points to it instead of duplicating; stale links to deleted threads are cleaned up automatically. Session history lives in `~/.claude`, so deleting a Discord thread never deletes the conversation itself.
+
+### Live progress text in Discord
+
+Intermediate agent output is posted as standalone channel messages while a turn runs, for plain channels as well as threads:
+
+- Claude Code thinking blocks are forwarded as `Claude Code 생각` messages, and intermediate assistant text as `Claude Code 진행` messages (Codex uses the same format with its own label).
+- Long texts are split into multiple messages (~1,800 chars each, marked `(계속)`) instead of being truncated.
+- A per-task cap guards against flooding: `CONNECT_LIVE_PROGRESS_MAX_MESSAGES` (default `60` messages). When the cap is hit the bot posts one notice and keeps only the final answer delivery.
+
 Use this only on trusted machines and private Discord servers. To narrow permissions, set `CODEX_DISCORD_CODEX_APPROVAL_POLICY=on-request` and `CODEX_DISCORD_CODEX_SANDBOX=workspace-write`. For GPU work, the machine running the connector must already see the GPU outside Codex first. Check `nvidia-smi`, `/dev/nvidia*`, and any container runtime GPU settings before changing Codex sandbox settings.
 
 ## Development loop

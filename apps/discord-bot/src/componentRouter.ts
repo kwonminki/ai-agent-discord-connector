@@ -9,6 +9,7 @@ export const COMPONENT_IDS = {
   newGeneralChat: "cdc:chat:new:general",
   newCurrentFolderChat: "cdc:chat:new:current",
   newHereChat: "cdc:chat:new:here",
+  chatResumeSelected: "cdc:chat:resume:selected",
   selfDevChat: "cdc:self:dev-chat",
   deletePreview: "cdc:delete:preview",
   deleteSessionSelected: "cdc:delete:session:selected",
@@ -218,6 +219,12 @@ export function routeDiscordComponent(customId: string, values: string[] = []): 
       const sessionId = values[0]?.trim();
       return sessionId && /^[A-Za-z0-9._:-]{1,128}$/.test(sessionId)
         ? `sync delete session ${sessionId}`
+        : null;
+    }
+    case COMPONENT_IDS.chatResumeSelected: {
+      const sessionId = values[0]?.trim();
+      return sessionId && /^[A-Za-z0-9-]{8,64}$/.test(sessionId)
+        ? `chat resume ${sessionId}`
         : null;
     }
     case COMPONENT_IDS.deleteChannelsConfirm:
