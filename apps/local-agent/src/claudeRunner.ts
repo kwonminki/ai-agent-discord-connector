@@ -334,7 +334,7 @@ function parseClaudeStreamLine(line: string): {
 
   const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : undefined;
 
-  if (parsed.type === "system" && sessionId) {
+  if (parsed.type === "system" && parsed.subtype === "init" && sessionId) {
     return {
       sessionId,
       progressEvents: [{ type: "thread-started", sessionId }],
