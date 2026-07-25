@@ -832,6 +832,228 @@ async function acquirePersistentCodexAppServer(input: RunCodexAppServerPromptInp
   return { server, reused: false };
 }
 
+// ---------------------------------------------------------------------------
+// Automatic context compaction
+//
+// The app-server streams thread/tokenUsage/updated notifications with the
+// model context window. Once a turn finishes above the configured threshold,
+// a detached task asks the persistent server to compact the thread natively
+// (thread/compact/start) so the next turn starts from a condensed context.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_CODEX_CONTEXT_WINDOW_TOKENS = 258_000;
+const CODEX_AUTO_COMPACT_COOLDOWN_MS = 5 * 60_000;
+const CODEX_AUTO_COMPACT_TIMEOUT_MS = 5 * 60_000;
+const codexAutoCompactLastRunByThread = new Map<string, number>();
+const codexAutoCompactInFlightThreads = new Set<string>();
+
+export interface CodexThreadTokenUsage {
+  contextTokens: number;
+  windowTokens: number | null;
+}
+
+export function codexAutoCompactPercent(): number {
+  const parsed = Number.parseInt(process.env.CODEX_DISCORD_CODEX_AUTO_COMPACT_PCT ?? "", 10);
+  return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 95) : 60;
+}
+
+function codexContextWindowTokens(windowTokens: number | null): number {
+  if (windowTokens && windowTokens > 0) {
+    return windowTokens;
+  }
+
+  const override = Number.parseInt(process.env.CODEX_DISCORD_CODEX_CONTEXT_WINDOW ?? "", 10);
+  return Number.isFinite(override) && override > 0 ? override : DEFAULT_CODEX_CONTEXT_WINDOW_TOKENS;
+}
+
+function threadTokenUsageFromNotification(params: Record<string, unknown>): CodexThreadTokenUsage | null {
+  const tokenUsage = params.tokenUsage as
+    | {
+        last?: { inputTokens?: unknown; cachedInputTokens?: unknown };
+        modelContextWindow?: unknown;
+      }
+    | undefined;
+  const last = tokenUsage?.last;
+  const contextTokens =
+    (typeof last?.inputTokens === "number" ? last.inputTokens : 0) +
+    (typeof last?.cachedInputTokens === "number" ? last.cachedInputTokens : 0);
+
+  if (contextTokens <= 0) {
+    return null;
+  }
+
+  return {
+    contextTokens,
+    windowTokens:
+      typeof tokenUsage?.modelContextWindow === "number" && tokenUsage.modelContextWindow > 0
+        ? tokenUsage.modelContextWindow
+        : null,
+  };
+}
+
+function maybeStartDetachedCodexCompaction(input: {
+  serverUrl: string;
+  threadId: string | null;
+  cwd: string;
+  promptInput: RunCodexAppServerPromptInput;
+  usage: CodexThreadTokenUsage | null;
+}): void {
+  const percent = codexAutoCompactPercent();
+
+  if (percent <= 0 || !input.threadId || !input.usage) {
+    return;
+  }
+
+  const windowTokens = codexContextWindowTokens(input.usage.windowTokens);
+
+  if (input.usage.contextTokens < Math.floor((windowTokens * percent) / 100)) {
+    return;
+  }
+
+  if (codexAutoCompactInFlightThreads.has(input.threadId)) {
+    return;
+  }
+
+  const lastRunAt = codexAutoCompactLastRunByThread.get(input.threadId) ?? 0;
+
+  if (Date.now() - lastRunAt < CODEX_AUTO_COMPACT_COOLDOWN_MS) {
+    return;
+  }
+
+  const threadId = input.threadId;
+  codexAutoCompactInFlightThreads.add(threadId);
+  codexAutoCompactLastRunByThread.set(threadId, Date.now());
+
+  void runDetachedCodexCompaction({
+    serverUrl: input.serverUrl,
+    threadId,
+    cwd: input.cwd,
+    promptInput: input.promptInput,
+  })
+    .catch((error) => {
+      console.warn(`codex auto-compact failed for thread ${threadId}`, error);
+    })
+    .finally(() => {
+      codexAutoCompactInFlightThreads.delete(threadId);
+    });
+}
+
+async function runDetachedCodexCompaction(input: {
+  serverUrl: string;
+  threadId: string;
+  cwd: string;
+  promptInput: RunCodexAppServerPromptInput;
+}): Promise<void> {
+  const socket = new WebSocket(input.serverUrl, { perMessageDeflate: false });
+  let nextRequestId = 1;
+  const pendingRequests = new Map<number, {
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+
+  const cleanup = () => {
+    for (const pending of pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Codex compaction socket closed."));
+    }
+    pendingRequests.clear();
+    try {
+      socket.close();
+    } catch {
+      // Already closed.
+    }
+  };
+
+  const request = (method: string, params: unknown): Promise<unknown> => {
+    const id = nextRequestId++;
+    socket.send(JSON.stringify({ method, id, params }));
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingRequests.delete(id);
+        reject(new Error(`Timed out waiting for Codex app-server response: ${method}`));
+      }, 60_000);
+      pendingRequests.set(id, { resolve, reject, timer });
+    });
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    const overallTimer = setTimeout(() => {
+      reject(new Error("Codex compaction timed out."));
+    }, CODEX_AUTO_COMPACT_TIMEOUT_MS);
+    overallTimer.unref();
+
+    const finish = (error?: Error) => {
+      clearTimeout(overallTimer);
+      cleanup();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+
+    socket.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+    socket.on("close", () => finish());
+
+    socket.on("message", (raw) => {
+      let message: { id?: number; method?: string; error?: { message?: string }; result?: unknown };
+      try {
+        message = JSON.parse(String(raw)) as typeof message;
+      } catch {
+        return;
+      }
+
+      if (typeof message.id === "number" && !message.method) {
+        const pending = pendingRequests.get(message.id);
+        if (pending) {
+          pendingRequests.delete(message.id);
+          clearTimeout(pending.timer);
+          if (message.error) {
+            pending.reject(new Error(message.error.message ?? "Codex app-server request failed"));
+          } else {
+            pending.resolve(message.result);
+          }
+        }
+        return;
+      }
+
+      if (message.method === "thread/compacted" || message.method === "turn/completed") {
+        finish();
+      }
+    });
+
+    socket.on("open", () => {
+      void (async () => {
+        try {
+          await request("initialize", {
+            clientInfo: {
+              name: APP_SERVER_CLIENT_NAME,
+              title: "AI Agent Discord Connector",
+              version: "0.1.0",
+            },
+            capabilities: { experimentalApi: true, requestAttestation: false },
+          });
+          socket.send(JSON.stringify({ method: "initialized" }));
+          await request("thread/resume", {
+            threadId: input.threadId,
+            cwd: input.cwd,
+            runtimeWorkspaceRoots: [input.cwd],
+            approvalPolicy: approvalPolicy(),
+            approvalsReviewer: APP_SERVER_APPROVALS_REVIEWER,
+            sandbox: sandboxMode(),
+            model: model(input.promptInput),
+          });
+          await request("thread/compact/start", { threadId: input.threadId });
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+        }
+      })();
+    });
+  });
+}
+
 function isLikelyAppServerConnectionFailure(result: RunCodexPromptResult): boolean {
   if (result.status !== "failed") {
     return false;
@@ -1194,11 +1416,15 @@ export async function runCodexAppServerPrompt(
         return acquired.failure;
       }
 
+      let latestTokenUsage: CodexThreadTokenUsage | null = null;
       const result = await runPromptAgainstAppServer({
         input,
         serverUrl: acquired.server.clientUrl,
         cwd,
         stderrChunks: acquired.server.stderrChunks,
+        onThreadTokenUsage: (usage) => {
+          latestTokenUsage = usage;
+        },
       }).catch((error) => appServerFailure({
         message: error instanceof Error ? error.message : "Codex app-server prompt failed",
         sessionId: input.sessionId ?? null,
@@ -1212,6 +1438,14 @@ export async function runCodexAppServerPrompt(
         await disposePersistentCodexAppServer(acquired.server);
         continue;
       }
+
+      maybeStartDetachedCodexCompaction({
+        serverUrl: acquired.server.clientUrl,
+        threadId: result.sessionId,
+        cwd,
+        promptInput: input,
+        usage: latestTokenUsage,
+      });
 
       return result;
     }
@@ -1258,10 +1492,12 @@ async function runPromptAgainstAppServer(input: {
   serverUrl: string;
   cwd: string;
   stderrChunks: Buffer[];
+  onThreadTokenUsage?: (usage: CodexThreadTokenUsage) => void;
 }): Promise<RunCodexPromptResult> {
   const socket = new WebSocket(input.serverUrl, { perMessageDeflate: false });
   let nextRequestId = 1;
   let sessionId = input.input.sessionId ?? null;
+  let autoCompactAnnounced = false;
   let completed = false;
   let turnFinished = false;
   let activeTurnId: string | null = null;
@@ -1429,6 +1665,31 @@ async function runPromptAgainstAppServer(input: {
     const params = typeof message.params === "object" && message.params !== null
       ? (message.params as Record<string, unknown>)
       : {};
+
+    if (method === "thread/tokenUsage/updated") {
+      const usage = threadTokenUsageFromNotification(params);
+
+      if (usage) {
+        input.onThreadTokenUsage?.(usage);
+        const percent = codexAutoCompactPercent();
+        const windowTokens = codexContextWindowTokens(usage.windowTokens);
+
+        if (
+          percent > 0 &&
+          !autoCompactAnnounced &&
+          usage.contextTokens >= Math.floor((windowTokens * percent) / 100)
+        ) {
+          autoCompactAnnounced = true;
+          await emitProgress({
+            type: "operation-progress",
+            label: "컨텍스트 자동 압축 예정",
+            detail: `사용량 ${Math.round(usage.contextTokens / 1_000)}k/${Math.round(windowTokens / 1_000)}k 토큰 (${percent}% 초과) — 이 턴이 끝나면 압축합니다`,
+            eventType: method,
+          });
+        }
+      }
+      return;
+    }
 
     if (method === "thread/started") {
       const thread = typeof params.thread === "object" && params.thread !== null

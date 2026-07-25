@@ -231,6 +231,15 @@ The worker also keeps one `codex app-server` process per (codex command, `CODEX_
 
 `/chat-new location:browse` opens an interactive folder picker (direct mode only): a select menu moves into subfolders, `⬆️ 상위 폴더`/`🏠 홈` buttons move up or jump to the home directory, pagination handles folders with many children, and `✅ 이 폴더로 새 채팅` creates the session channel at the browsed path. `name`/`prompt` options given to `/chat-new` are carried through the picker and applied on confirm (a very long prompt is dropped with a notice). The picker edits its own message in place and keeps its state in the message content, so it keeps working across bot restarts. Hidden folders are not listed. Renaming session channels or threads in Discord is safe — the connector routes everything by channel id and never renames them back.
 
+### Automatic context compaction
+
+Both agents condense their conversation automatically once context usage crosses a threshold (default 60% of the model context window), so long-running threads do not stall near the limit:
+
+- **Claude Code**: after a turn ends above the threshold, the persistent session runs `/compact` on itself and posts a `🧹 컨텍스트 자동 압축 완료` notification to the thread. Configure with `CODEX_DISCORD_CLAUDE_AUTO_COMPACT_PCT` (default `60`, `0` disables) and `CODEX_DISCORD_CLAUDE_CONTEXT_WINDOW` (defaults to 1M tokens for `[1m]` models, otherwise 200k).
+- **Codex**: token usage arrives from the app-server (`thread/tokenUsage/updated`, including the model context window). When a turn crosses the threshold the thread shows a `컨텍스트 자동 압축 예정` progress line and the worker asks the persistent app-server to compact the thread natively (`thread/compact/start`). Configure with `CODEX_DISCORD_CODEX_AUTO_COMPACT_PCT` (default `60`, `0` disables) and `CODEX_DISCORD_CODEX_CONTEXT_WINDOW` (fallback when the server does not report a window).
+
+Compaction attempts are rate-limited to one per five minutes per session.
+
 ### Reopening deleted session threads
 
 `/chat-resume` (main channel, direct mode) lists the most recent Claude Code sessions — including connector-started ones — in a select menu. Picking one recreates a thread under the Claude Code channel linked to that session, so the conversation continues where it left off even if the original thread was deleted in Discord. If a live thread already exists for the session, the command points to it instead of duplicating; stale links to deleted threads are cleaned up automatically. Session history lives in `~/.claude`, so deleting a Discord thread never deletes the conversation itself.

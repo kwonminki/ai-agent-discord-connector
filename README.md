@@ -19,6 +19,8 @@ Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI 
 >
 > 함께 추가: Claude thinking(생각)과 중간 진행 텍스트를 생략·절단 없이 분할 전송, `/chat-new location:browse` 폴더 탐색 UI, `/chat-resume`로 지운 스레드의 세션 복구, `/howtouse prompt:` 결합 전달, 메인 채널은 스레드 안내 전용으로 정리(채널 이름 변경 같은 Discord 시스템 메시지도 agent로 새지 않음), 대기열 작업마다 완료 멘션. v1.3의 원클릭 서버 업데이트와 [Agent Relay](docs/agent-relay.ko.md)도 그대로 포함됩니다.
 
+> **v1.4.1 패치 · 컨텍스트 자동 압축:** 대화가 길어져 컨텍스트 사용량이 창의 60%(설정 가능)를 넘으면 자동으로 압축합니다. Claude Code는 상주 세션이 스스로 `/compact`를 실행하고 스레드에 🧹 알림을 남기며, Codex는 앱서버의 토큰 사용량 알림을 감시해 네이티브 압축(`thread/compact/start`)을 백그라운드로 실행합니다. 대화는 그대로 이어지고, 세션당 5분에 1회로 제한됩니다. `CODEX_DISCORD_{CLAUDE,CODEX}_AUTO_COMPACT_PCT`로 조절하거나 0으로 끌 수 있습니다.
+
 > **v1.3 요약:** annotated tag를 push하면 release 채널 공지의 **등록 서버 업데이트** 버튼으로 연결된 컴퓨터들을 원클릭 업데이트할 수 있습니다. 사용자 스레드는 건드리지 않고 실행 중인 Worker는 graceful drain으로 보존합니다.
 
 Discord에서 평소처럼 메시지를 보내면 agent가 연결된 컴퓨터에서 작업하고, 중요한 진행 상황과 최종 답변을 Discord로 돌려줍니다. 이미지, 영상, 오디오, 일반 파일도 양방향으로 주고받을 수 있습니다.

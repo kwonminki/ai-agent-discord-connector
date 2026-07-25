@@ -10,7 +10,9 @@ import {
   type ClaudeSessionIdleNotification,
 } from "./claudeRunner.js";
 
-async function createPersistentFakeClaude(tempRoot: string): Promise<{
+async function createPersistentFakeClaude(tempRoot: string, options: {
+  usageTokens?: number;
+} = {}): Promise<{
   fakeClaude: string;
   spawnsPath: string;
   argsPath: string;
@@ -22,6 +24,7 @@ async function createPersistentFakeClaude(tempRoot: string): Promise<{
   const argsPath = path.join(tempRoot, "args.log");
   const inputsPath = path.join(tempRoot, "inputs.json");
   const triggerPath = path.join(tempRoot, "fire-idle-turn");
+  const usageTokens = options.usageTokens ?? 1_000;
 
   await writeFile(
     fakeClaude,
@@ -38,7 +41,7 @@ async function createPersistentFakeClaude(tempRoot: string): Promise<{
       "  messages.push(JSON.parse(line));",
       `  fs.writeFileSync(${JSON.stringify(inputsPath)}, JSON.stringify(messages));`,
       "  const n = messages.length;",
-      "  console.log(JSON.stringify({ type: 'assistant', session_id: 'persist-session-1', message: { content: [{ type: 'text', text: 'answer ' + n }] } }));",
+      `  console.log(JSON.stringify({ type: 'assistant', session_id: 'persist-session-1', message: { usage: { input_tokens: ${usageTokens}, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'answer ' + n }] } }));`,
       "  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'persist-session-1', result: 'result ' + n }));",
       "});",
       "input.on('close', () => process.exit(0));",
@@ -191,6 +194,53 @@ describe("persistent Claude Code sessions", () => {
 
       expect(fresh).toMatchObject({ status: "completed", finalMessage: "result 1" });
       expect(await countSpawns(fake.spawnsPath)).toBe(2);
+    } finally {
+      await disposeClaudePersistentSessions("test-cleanup");
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-compacts the session when context usage crosses the threshold", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-persist-compact-"));
+    // 150k tokens against the default 200k window crosses the default 60%.
+    const fake = await createPersistentFakeClaude(tempRoot, { usageTokens: 150_000 });
+    const notifications: ClaudeSessionIdleNotification[] = [];
+    setClaudeSessionIdleNotificationSink((notification) => {
+      notifications.push(notification);
+    });
+
+    try {
+      const first = await runClaudePrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "긴 작업을 해줘",
+        timeoutMs: 5_000,
+        controlKey: "channel-persist-compact",
+        sessionId: null,
+        claudeCommand: fake.fakeClaude,
+        persistentSession: true,
+      });
+      expect(first.status).toBe("completed");
+
+      let inputs: Array<{ message: { content: Array<{ text: string }> } }> = [];
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        inputs = JSON.parse(await readFile(fake.inputsPath, "utf8").catch(() => "[]"));
+        if (inputs.length >= 2) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(inputs.map((message) => message.message.content[0]?.text)).toEqual([
+        "긴 작업을 해줘",
+        "/compact",
+      ]);
+
+      for (let attempt = 0; attempt < 300 && notifications.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(notifications[0]?.message).toContain("컨텍스트 자동 압축 완료");
+      expect(notifications[0]?.controlKey).toBe("channel-persist-compact");
     } finally {
       await disposeClaudePersistentSessions("test-cleanup");
       await rm(tempRoot, { recursive: true, force: true });

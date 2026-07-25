@@ -19,6 +19,8 @@ A personal bridge for using **AI agents such as Codex and Claude Code running on
 >
 > Also included: Claude thinking and intermediate progress are delivered as split messages instead of being dropped or truncated, `/chat-new location:browse` opens a clickable folder picker, `/chat-resume` reopens sessions whose threads were deleted, `/howtouse prompt:` forwards a request together with the usage guide, main channels now only host threads (and Discord system messages such as channel renames never leak into agents), and every queued completion mentions the operator. v1.3 one-click fleet updates and [Agent Relay](docs/agent-relay.en.md) remain included.
 
+> **v1.4.1 patch · Automatic context compaction:** when a long conversation crosses 60% (configurable) of the model context window, it is condensed automatically. Claude Code runs `/compact` on its own persistent session and leaves a 🧹 notice in the thread; Codex watches the app-server token-usage feed and triggers native compaction (`thread/compact/start`) in the background. The conversation continues seamlessly, rate-limited to once per five minutes per session. Tune with `CODEX_DISCORD_{CLAUDE,CODEX}_AUTO_COMPACT_PCT`, or set `0` to disable.
+
 > **v1.3 recap:** pushing an annotated tag posts a release notice with an **Update registered servers** button that updates connected computers one click at a time, preserving running Workers through graceful drain and never touching user threads.
 
 Send an ordinary Discord message and the agent works on the connected computer, then returns important progress and the final answer to Discord. Images, video, audio, and general files can move in both directions.

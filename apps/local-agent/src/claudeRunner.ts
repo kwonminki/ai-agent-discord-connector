@@ -58,7 +58,28 @@ interface ActiveClaudeTurn {
 }
 
 const STDERR_TAIL_CHARS = 8_192;
+const DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS = 200_000;
+const LONG_CLAUDE_CONTEXT_WINDOW_TOKENS = 1_000_000;
+const AUTO_COMPACT_COOLDOWN_MS = 5 * 60_000;
+const AUTO_COMPACT_TURN_TIMEOUT_MS = 10 * 60_000;
 const activeClaudeTurns = new Map<string, ActiveClaudeTurn>();
+
+export function claudeAutoCompactPercent(): number {
+  const parsed = Number.parseInt(process.env.CODEX_DISCORD_CLAUDE_AUTO_COMPACT_PCT ?? "", 10);
+  return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 95) : 60;
+}
+
+export function claudeContextWindowTokens(model: string | null | undefined): number {
+  const override = Number.parseInt(process.env.CODEX_DISCORD_CLAUDE_CONTEXT_WINDOW ?? "", 10);
+
+  if (Number.isFinite(override) && override > 0) {
+    return override;
+  }
+
+  return model?.includes("[1m]")
+    ? LONG_CLAUDE_CONTEXT_WINDOW_TOKENS
+    : DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS;
+}
 
 export async function steerActiveClaudeTurn(
   controlKey: string,
@@ -316,6 +337,20 @@ function toolResultProgressFromClaudeContent(content: unknown): ClaudeRunnerProg
   };
 }
 
+function contextTokensFromClaudeUsage(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== "object") {
+    return undefined;
+  }
+
+  const record = usage as Record<string, unknown>;
+  const total =
+    (typeof record.input_tokens === "number" ? record.input_tokens : 0) +
+    (typeof record.cache_read_input_tokens === "number" ? record.cache_read_input_tokens : 0) +
+    (typeof record.cache_creation_input_tokens === "number" ? record.cache_creation_input_tokens : 0);
+
+  return total > 0 ? total : undefined;
+}
+
 function parseClaudeStreamLine(line: string): {
   sessionId?: string;
   finalMessage?: string;
@@ -323,6 +358,7 @@ function parseClaudeStreamLine(line: string): {
   turnEnded?: boolean;
   isResult?: boolean;
   isError?: boolean;
+  contextTokens?: number;
 } | null {
   let parsed: Record<string, unknown>;
 
@@ -348,6 +384,7 @@ function parseClaudeStreamLine(line: string): {
     const thinking = thinkingFromClaudeContent(content);
     const toolProgress = toolProgressFromClaudeContent(content);
     const stopReason = typeof message?.stop_reason === "string" ? message.stop_reason : null;
+    const contextTokens = contextTokensFromClaudeUsage(message?.usage);
 
     const progressEvents: ClaudeRunnerProgressEvent[] = [
       ...(thinking ? [{ type: "agent-thought" as const, text: thinking }] : []),
@@ -358,6 +395,7 @@ function parseClaudeStreamLine(line: string): {
     return {
       sessionId,
       ...(progressEvents.length > 0 ? { progressEvents } : {}),
+      ...(contextTokens !== undefined ? { contextTokens } : {}),
       ...(stopReason && stopReason !== "tool_use" && stopReason !== "pause_turn"
         ? { turnEnded: true }
         : {}),
@@ -509,6 +547,8 @@ class PersistentClaudeSession {
 
   private readonly child: ReturnType<typeof spawn>;
   private readonly claudeCommand: string;
+  private readonly baseInput: RunClaudePromptInput;
+  private readonly model: string | null;
   private spawnFailureResult: RunClaudePromptResult | null = null;
   private lineBuffer = "";
   private stderrTail = "";
@@ -518,12 +558,17 @@ class PersistentClaudeSession {
   private idleTtlTimer: NodeJS.Timeout | null = null;
   private disposeKillTimer: NodeJS.Timeout | null = null;
   private exitWaiters: Array<() => void> = [];
+  private lastContextTokens: number | null = null;
+  private autoCompactRunning = false;
+  private lastAutoCompactAt = 0;
 
   constructor(input: RunClaudePromptInput, controlKey: string, signature: string) {
     this.controlKey = controlKey;
     this.signature = signature;
     this.sessionId = input.sessionId?.trim() || null;
     this.claudeCommand = resolveClaudeCommand(input);
+    this.baseInput = { ...input, onProgress: undefined, signal: undefined };
+    this.model = input.model?.trim() || null;
     this.child = spawn(this.claudeCommand, claudeArgs(input), {
       cwd: input.cwd,
       env: process.env,
@@ -863,9 +908,90 @@ class PersistentClaudeSession {
     this.lastUsedAt = Date.now();
     if (!this.disposed && !this.exited) {
       this.scheduleIdleTtl();
+      this.maybeStartAutoCompact();
     }
 
     void Promise.allSettled(turn.progressTasks).then(() => turn.resolve(result));
+  }
+
+  private maybeStartAutoCompact(): void {
+    if (this.autoCompactRunning || this.disposed || this.exited) {
+      return;
+    }
+
+    const percent = claudeAutoCompactPercent();
+
+    if (percent <= 0 || !this.lastContextTokens) {
+      return;
+    }
+
+    const windowTokens = claudeContextWindowTokens(this.model);
+    const thresholdTokens = Math.floor((windowTokens * percent) / 100);
+
+    if (this.lastContextTokens < thresholdTokens) {
+      return;
+    }
+
+    if (Date.now() - this.lastAutoCompactAt < AUTO_COMPACT_COOLDOWN_MS) {
+      return;
+    }
+
+    this.autoCompactRunning = true;
+    this.lastAutoCompactAt = Date.now();
+    void this.runAutoCompactTurn(this.lastContextTokens, windowTokens, percent);
+  }
+
+  private async runAutoCompactTurn(
+    beforeTokens: number,
+    windowTokens: number,
+    percent: number,
+  ): Promise<void> {
+    try {
+      const result = await this.submitTurn(
+        {
+          ...this.baseInput,
+          prompt: "/compact",
+          timeoutMs: AUTO_COMPACT_TURN_TIMEOUT_MS,
+        },
+        true,
+      );
+
+      const usageSummary = `${Math.round(beforeTokens / 1_000)}k/${Math.round(windowTokens / 1_000)}k 토큰`;
+      const compacted = result.status === "completed" && !/not enough/i.test(result.finalMessage);
+      const message = compacted
+        ? `🧹 컨텍스트 자동 압축 완료 — 사용량이 ${usageSummary}(${percent}% 초과)에 도달해 대화를 압축했습니다. 대화는 그대로 이어집니다.`
+        : `⚠️ 컨텍스트 자동 압축 시도(${usageSummary})가 완료되지 않았습니다: ${
+            result.finalMessage || result.stderr || result.errorCode || "알 수 없는 응답"
+          }`;
+
+      this.emitAutoCompactNotification(message);
+    } catch (error) {
+      console.warn("claude auto-compact turn failed", error);
+    } finally {
+      this.autoCompactRunning = false;
+    }
+  }
+
+  private emitAutoCompactNotification(message: string): void {
+    if (!idleNotificationSink) {
+      return;
+    }
+
+    const notification: ClaudeSessionIdleNotification = {
+      controlKey: this.controlKey,
+      sessionId: this.sessionId,
+      message,
+      isError: false,
+      at: new Date().toISOString(),
+    };
+
+    try {
+      void Promise.resolve(idleNotificationSink(notification)).catch((error) => {
+        console.warn("claude auto-compact notification failed", error);
+      });
+    } catch (error) {
+      console.warn("claude auto-compact notification failed", error);
+    }
   }
 
   private handleLine(line: string): void {
@@ -877,6 +1003,10 @@ class PersistentClaudeSession {
 
     if (event.sessionId) {
       this.sessionId = event.sessionId;
+    }
+
+    if (event.contextTokens !== undefined) {
+      this.lastContextTokens = event.contextTokens;
     }
 
     const turn = this.activeTurn;

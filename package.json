@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-discord-connector",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": false,
   "description": "Run and manage local AI agent workflows from trusted Discord channels.",
   "license": "MIT",
