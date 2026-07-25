@@ -869,9 +869,9 @@ git diff --name-only HEAD..origin/master
 | `README.md`, `docs/`만 | service 재시작 불필요 |
 | `apps/discord-bot/`만 | bot restart |
 | slash command 선언 | bot restart 후 command 재등록 확인 |
-| `apps/local-agent/`, worker store/runner | worker graceful drain 후 restart |
-| 공유 type, `packages/`, config schema | bot과 worker 모두 restart |
-| `package.json`, `pnpm-lock.yaml` | install/test 후 bot과 worker 모두 restart |
+| `apps/local-agent/`, worker store/runner | worker가 idle일 때 restart, busy면 보류 |
+| 공유 type, `packages/`, config schema | bot restart, worker는 idle일 때 restart |
+| `package.json`, `pnpm-lock.yaml` | install/test 후 bot restart, worker는 idle일 때 restart |
 | Codex/Claude CLI 버전 변경 | protocol smoke test 후 순차 rollout |
 
 실제 import 관계가 표보다 우선입니다. 예를 들어 bot이 local-agent type/store를 직접 import하므로 shared 파일 변경은 양쪽 process에 영향을 줄 수 있습니다.
@@ -884,13 +884,15 @@ git diff --name-only HEAD..origin/master
 - bot PID, worker PID, Codex/Claude child process를 기록합니다.
 - 같은 bot token을 쓰는 다른 서버의 업데이트 상태도 기록합니다.
 
-active job이 있으면 세 선택지를 사용자에게 명확히 제시합니다.
+active 또는 queued job이 있으면 worker에 `SIGTERM`, `SIGKILL`, `restart`, `stop`, `kill`을 보내지 않습니다. repo와 의존성 및 bot만 업데이트하고 worker 적용은 보류했다고 보고합니다. worker는 active와 queued가 모두 0일 때만 재시작합니다.
 
 - **bot만 즉시 재시작**: worker 작업은 유지됩니다.
-- **worker drain**: 현재 작업 완료 후 새 worker로 교체됩니다. 그동안 새 요청은 disk queue에 남을 수 있습니다.
+- **worker 교체 보류**: 기존 worker는 새 요청을 계속 처리하며, idle이 된 뒤 별도로 교체합니다.
 - **worker 강제 종료**: 현재 agent와 하위 명령이 끊기며 active job은 실패할 수 있습니다.
 
 사용자의 명시 승인 없이 세 번째를 선택하지 않습니다.
+
+busy worker에 graceful `SIGTERM`을 미리 보내는 방식도 사용하지 않습니다. worker는 신호를 받는 즉시 새 job 수락을 중단하므로, 장기 작업 하나가 남아 있으면 다른 Discord thread의 요청이 모두 disk queue에서 기다리게 됩니다.
 
 ### 3. 코드와 dependency 적용
 
@@ -913,8 +915,8 @@ bot과 worker를 모두 바꿀 때 권장 순서:
 
 1. 새 코드와 dependency를 disk에 준비하고 검증합니다.
 2. bot을 재시작해 새 gateway 코드를 적용합니다.
-3. worker에 정상 `SIGTERM`을 보내 drain을 시작합니다.
-4. active job 완료 후 service manager가 새 worker를 올리는지 확인합니다.
+3. worker의 active와 queued가 모두 0인지 다시 확인합니다. 하나라도 남아 있으면 worker 적용을 보류하고 종료합니다.
+4. idle worker만 정상 재시작하고 service manager가 새 worker를 올리는지 확인합니다.
 5. 새 PID와 ready log를 확인합니다.
 6. 새 짧은 요청으로 end-to-end 검증합니다.
 

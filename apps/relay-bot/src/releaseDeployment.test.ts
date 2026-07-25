@@ -98,7 +98,12 @@ describe("release deployment", () => {
 
     expect(prompt).toContain(release.sha);
     expect(prompt).toContain("ff-only");
-    expect(prompt).toContain("SIGTERM graceful drain");
-    expect(prompt).toContain("SIGKILL하지 않는다");
+    expect(prompt).toContain(
+      "active 또는 pending 요청이 하나라도 있으면 worker에 SIGTERM, SIGKILL, restart, stop, kill 신호를 보내지 않는다.",
+    );
+    expect(prompt).toContain(
+      "worker의 active와 pending이 모두 0이고 supervisor가 확인된 경우에만 worker를 graceful restart한다.",
+    );
+    expect(prompt).toContain("SIGKILL");
   });
 });

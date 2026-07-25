@@ -551,15 +551,17 @@ Classify restart scope:
 | README and docs only | No service restart |
 | `apps/discord-bot/` only | Restart bot |
 | Slash command definitions | Restart bot and verify registration |
-| `apps/local-agent/`, worker store, runner | Gracefully drain and restart worker |
-| Shared packages or config schema | Restart bot and worker |
-| Dependencies or lockfile | Install, test, then restart affected services |
+| `apps/local-agent/`, worker store, runner | Restart worker only when idle; defer while busy |
+| Shared packages or config schema | Restart bot; restart worker only when idle |
+| Dependencies or lockfile | Install and test, restart bot, then restart worker only when idle |
 
-Check `/status`, `.connect/worker/jobs/*/state.json`, durable queues, bot PID, worker PID, and child processes. If active work exists, offer these choices:
+Check `/status`, `.connect/worker/jobs/*/state.json`, durable queues, bot PID, worker PID, and child processes. If any active or queued work exists, do not send the worker `SIGTERM`, `SIGKILL`, `restart`, `stop`, or `kill`. Update the repository, dependencies, and bot only, then report that the worker rollout is deferred until both active and queued counts reach zero.
 
 - Restart bot now and preserve worker work.
-- Drain worker and replace it after active jobs finish.
+- Leave the busy worker accepting new jobs and replace it later when idle.
 - Force-stop worker and lose active work, only with explicit approval.
+
+Do not pre-schedule a graceful worker drain while it is busy. The worker stops accepting new jobs as soon as it receives the signal, so one long-running turn can leave every other Discord thread waiting in the durable queue.
 
 Apply only to a clean or understood worktree:
 
