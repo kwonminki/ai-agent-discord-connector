@@ -106,11 +106,14 @@ export function buildReleaseUpdatePrompt(
     "- 검증을 통과한 경우에만 exact release commit까지 ff-only로 이동한다.",
     "- package manager lockfile을 준수해 비대화형 의존성 설치를 수행한다.",
     "- bot gateway와 worker를 구분한다. worker의 active/pending 요청을 먼저 확인한다.",
-    "- active 또는 pending 요청이 하나라도 있으면 worker에 SIGTERM, SIGKILL, restart, stop, kill 신호를 보내지 않는다.",
-    "- worker가 busy면 repo와 의존성 및 bot만 안전하게 업데이트하고, worker 교체는 보류 사항으로 보고한다.",
-    "- worker의 active와 pending이 모두 0이고 supervisor가 확인된 경우에만 worker를 graceful restart한다.",
+    "- 중요: 이 maintenance 요청 자체가 대상 worker에서 실행 중인 active job이다.",
+    "- 따라서 이 turn 안에서는 active/pending 수와 무관하게 worker에 SIGTERM, SIGKILL, restart, stop, kill 또는 reload 신호를 절대 보내지 않는다.",
+    "- systemctl, launchctl, task scheduler, sleep, at, nohup, systemd-run, timer, trap 등을 이용해 이 답변 이후 worker 재시작을 예약하는 것도 금지한다.",
+    "- repo와 의존성을 검증하고 bot gateway만 안전하게 재시작한다. worker는 현재 로드된 코드로 계속 실행시킨다.",
+    "- worker 코드 변경 적용은 이 maintenance 답변이 완료된 뒤, 외부 operator가 active=0, pending=0, 보존할 background child process 없음까지 별도로 확인한 후 수행할 후속 작업으로 남긴다.",
     "- supervisor가 불명확하면 repo만 업데이트하고 worker 적용은 보류한다.",
     "",
-    "최종 답변에 이전/이후 commit과 version, repo 경로, bot/worker 서비스와 PID, ready 여부, active/pending 수, 보류 사항을 간결하게 적어줘.",
+    "최종 답변에 이전/이후 commit과 version, repo 경로, bot/worker 서비스와 PID, bot ready 여부, active/pending 수를 적어줘.",
+    "worker 적용 상태는 반드시 `deferred`로 표시하고, 이 turn에서 worker에 어떤 신호나 지연 재시작도 보내지 않았다고 명시해줘.",
   ].join("\n");
 }

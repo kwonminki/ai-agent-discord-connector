@@ -563,6 +563,8 @@ Check `/status`, `.connect/worker/jobs/*/state.json`, durable queues, bot PID, w
 
 Do not pre-schedule a graceful worker drain while it is busy. The worker stops accepting new jobs as soon as it receives the signal, so one long-running turn can leave every other Discord thread waiting in the durable queue.
 
+A maintenance agent started by the **Update registered servers** button must never restart its own worker. The update request is itself an active worker job, so draining the worker from that turn, or scheduling a restart after the reply, can block every other thread and terminate background processes in the same cgroup. This path updates the repository, dependencies, and bot only, and must report the worker rollout as `deferred`. Do not schedule a delayed worker restart with `sleep`, `at`, `nohup`, `systemd-run`, timers, or traps. A separate external operator may apply the worker later only after verifying zero active jobs, zero queued jobs, and no background child processes that must survive.
+
 Apply only to a clean or understood worktree:
 
 ```bash

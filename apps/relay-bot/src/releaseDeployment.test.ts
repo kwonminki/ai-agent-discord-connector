@@ -99,11 +99,13 @@ describe("release deployment", () => {
     expect(prompt).toContain(release.sha);
     expect(prompt).toContain("ff-only");
     expect(prompt).toContain(
-      "active 또는 pending 요청이 하나라도 있으면 worker에 SIGTERM, SIGKILL, restart, stop, kill 신호를 보내지 않는다.",
+      "이 maintenance 요청 자체가 대상 worker에서 실행 중인 active job이다.",
     );
     expect(prompt).toContain(
-      "worker의 active와 pending이 모두 0이고 supervisor가 확인된 경우에만 worker를 graceful restart한다.",
+      "active/pending 수와 무관하게 worker에 SIGTERM, SIGKILL, restart, stop, kill 또는 reload 신호를 절대 보내지 않는다.",
     );
+    expect(prompt).toContain("systemd-run");
+    expect(prompt).toContain("worker 적용 상태는 반드시 `deferred`");
     expect(prompt).toContain("SIGKILL");
   });
 });

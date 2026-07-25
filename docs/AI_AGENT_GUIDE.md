@@ -894,6 +894,8 @@ active 또는 queued job이 있으면 worker에 `SIGTERM`, `SIGKILL`, `restart`,
 
 busy worker에 graceful `SIGTERM`을 미리 보내는 방식도 사용하지 않습니다. worker는 신호를 받는 즉시 새 job 수락을 중단하므로, 장기 작업 하나가 남아 있으면 다른 Discord thread의 요청이 모두 disk queue에서 기다리게 됩니다.
 
+`등록 서버 업데이트` 버튼으로 시작된 maintenance agent는 예외 없이 worker 재시작을 수행하지 않습니다. 업데이트 요청 자체가 worker의 active job이므로, 그 turn에서 자기 worker를 drain하거나 답변 뒤 재시작을 예약하면 다른 thread queue가 멈추고 같은 cgroup의 background process가 종료될 수 있습니다. 이 경로에서는 repo, dependency, bot만 적용하고 worker 상태는 반드시 `deferred`로 보고합니다. `sleep`, `at`, `nohup`, `systemd-run`, timer, trap을 이용한 지연 worker 재시작도 금지합니다. worker 적용은 maintenance 답변이 끝난 뒤 외부 operator가 active와 queued가 모두 0이고 보존할 child process가 없음을 별도로 확인한 후 진행합니다.
+
 ### 3. 코드와 dependency 적용
 
 dirty worktree를 덮어쓰지 않습니다. 자동 배포는 fast-forward 가능한 깨끗한 checkout을 기본으로 합니다.
@@ -915,8 +917,8 @@ bot과 worker를 모두 바꿀 때 권장 순서:
 
 1. 새 코드와 dependency를 disk에 준비하고 검증합니다.
 2. bot을 재시작해 새 gateway 코드를 적용합니다.
-3. worker의 active와 queued가 모두 0인지 다시 확인합니다. 하나라도 남아 있으면 worker 적용을 보류하고 종료합니다.
-4. idle worker만 정상 재시작하고 service manager가 새 worker를 올리는지 확인합니다.
+3. 버튼으로 시작된 maintenance turn에서는 worker 적용을 `deferred`로 보고하고 종료합니다.
+4. 별도 외부 operator 작업에서 active와 queued가 모두 0이고 보존할 child process가 없는지 확인한 뒤에만 worker를 재시작합니다.
 5. 새 PID와 ready log를 확인합니다.
 6. 새 짧은 요청으로 end-to-end 검증합니다.
 
