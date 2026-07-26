@@ -12,6 +12,11 @@ Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI 
 
 ## v1.4 Release
 
+> ### v1.4.2 패치 · 장기 Codex 작업에서도 안정적인 steering
+> **Codex goal이 자동 연속 turn으로 넘어가도 Discord의 후속 지시가 현재 실행 중인 turn을 다시 찾아 전달됩니다.**
+>
+> 이전에는 장기 goal이 다음 turn으로 자동 진행하면 Discord가 기억한 turn ID와 실제 활성 turn ID가 달라져 steering이 간헐적으로 실패했습니다. 이제 connector가 이 불일치를 감지하고 같은 thread의 최신 `inProgress` turn을 조회한 뒤 한 번 안전하게 재시도합니다. 일반 작업과 Claude Code의 stdin 기반 steering 동작은 그대로 유지됩니다.
+
 > ### NEW · 상주 Agent 세션 — 예약과 백그라운드 작업이 실제로 돌아갑니다
 > **Claude Code 세션이 메시지 사이에도 살아 있어, 채팅이 끝난 뒤에 발화한 예약(cron)·백그라운드 작업 결과가 Discord로 도착합니다.**
 >

@@ -133,6 +133,46 @@ interface ActiveCodexAppServerTurn {
 
 const activeTurnsByControlKey = new Map<string, ActiveCodexAppServerTurn>();
 
+function isActiveTurnMismatch(error: unknown): boolean {
+  return error instanceof Error &&
+    /expected active turn id ['"][^'"]+['"] but found ['"][^'"]+['"]/i.test(error.message);
+}
+
+function inProgressTurnId(response: unknown, expectedThreadId: string): string | null {
+  if (typeof response !== "object" || response === null) {
+    return null;
+  }
+
+  const thread = (response as {
+    thread?: {
+      id?: unknown;
+      turns?: unknown;
+    };
+  }).thread;
+
+  if (
+    !thread ||
+    (typeof thread.id === "string" && thread.id !== expectedThreadId) ||
+    !Array.isArray(thread.turns)
+  ) {
+    return null;
+  }
+
+  for (let index = thread.turns.length - 1; index >= 0; index -= 1) {
+    const turn = thread.turns[index];
+    if (
+      typeof turn === "object" &&
+      turn !== null &&
+      (turn as { status?: unknown }).status === "inProgress" &&
+      typeof (turn as { id?: unknown }).id === "string"
+    ) {
+      return (turn as { id: string }).id;
+    }
+  }
+
+  return null;
+}
+
 export async function steerActiveCodexAppServerTurn(
   controlKey: string,
   content: string,
@@ -152,12 +192,15 @@ export async function steerActiveCodexAppServerTurn(
     return { status: "failed", message: "Steering 지시가 비어 있습니다." };
   }
 
-  try {
-    await activeTurn.request("turn/steer", {
+  const steer = (turnId: string) =>
+    activeTurn.request("turn/steer", {
       threadId: activeTurn.threadId,
-      expectedTurnId: activeTurn.turnId,
+      expectedTurnId: turnId,
       input: [{ type: "text", text: prompt, text_elements: [] }],
     });
+
+  try {
+    await steer(activeTurn.turnId);
     return {
       status: "accepted",
       message: "현재 Codex turn에 추가 지시를 전달했습니다.",
@@ -165,6 +208,29 @@ export async function steerActiveCodexAppServerTurn(
       turnId: activeTurn.turnId,
     };
   } catch (error) {
+    if (isActiveTurnMismatch(error)) {
+      try {
+        const threadResult = await activeTurn.request("thread/read", {
+          threadId: activeTurn.threadId,
+          includeTurns: true,
+        });
+        const refreshedTurnId = inProgressTurnId(threadResult, activeTurn.threadId);
+
+        if (refreshedTurnId && refreshedTurnId !== activeTurn.turnId) {
+          await steer(refreshedTurnId);
+          activeTurn.turnId = refreshedTurnId;
+          return {
+            status: "accepted",
+            message: "현재 Codex turn을 다시 확인한 뒤 추가 지시를 전달했습니다.",
+            threadId: activeTurn.threadId,
+            turnId: refreshedTurnId,
+          };
+        }
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
+
     return {
       status: "failed",
       message: error instanceof Error ? error.message : "Codex steering 요청에 실패했습니다.",
