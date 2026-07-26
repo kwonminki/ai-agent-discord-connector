@@ -68,6 +68,7 @@ export interface ClaudeSessionNotificationRecord {
   sessionId: string | null;
   message: string;
   isError?: boolean;
+  agent?: "codex" | "claude";
 }
 
 export interface PendingClaudeSessionNotifications {

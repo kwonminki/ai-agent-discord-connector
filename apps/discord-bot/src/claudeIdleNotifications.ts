@@ -10,8 +10,8 @@ import {
   type DiscordMessagePayload,
 } from "./responses.js";
 
-const ANSWER_ATTACHMENT_NAME = "claude-answer.txt";
-const ANSWER_EMBED_COLOR = 0x8e44ad;
+const CLAUDE_ANSWER_EMBED_COLOR = 0x8e44ad;
+const CODEX_ANSWER_EMBED_COLOR = 0x2ecc71;
 
 export interface ClaudeIdleNotificationSource {
   readPendingClaudeSessionNotifications(): Promise<Array<{
@@ -36,16 +36,18 @@ export interface DeliverClaudeIdleNotificationsResult {
 export function formatClaudeIdleNotification(
   record: ClaudeSessionNotificationRecord,
 ): DiscordMessagePayload {
+  const agent = record.agent === "codex" ? "codex" : "claude";
+  const agentName = agent === "codex" ? "Codex" : "Claude Code";
   const preparedAnswer = prepareAgentCompletionAnswer({
-    agent: "claude",
+    agent,
     answer: record.message,
-    attachmentName: ANSWER_ATTACHMENT_NAME,
+    attachmentName: `${agent}-answer.txt`,
   });
   const lines = [
     record.isError
-      ? "**Claude Code 세션 알림 (오류)** — 예약·백그라운드 작업"
-      : "**Claude Code 세션 알림** — 예약·백그라운드 작업이 결과를 보냈습니다",
-    ...(record.sessionId ? [`Claude session: \`${record.sessionId}\``] : []),
+      ? `**${agentName} 세션 알림 (오류)** — 예약·백그라운드 작업`
+      : `**${agentName} 세션 알림** — 예약·백그라운드 작업이 결과를 보냈습니다`,
+    ...(record.sessionId ? [`${agentName} session: \`${record.sessionId}\``] : []),
   ];
 
   const payload: DiscordMessagePayload = {
@@ -54,7 +56,7 @@ export function formatClaudeIdleNotification(
     embeds: [
       {
         title: "알림 내용",
-        color: ANSWER_EMBED_COLOR,
+        color: agent === "codex" ? CODEX_ANSWER_EMBED_COLOR : CLAUDE_ANSWER_EMBED_COLOR,
         description: preparedAnswer.description,
       },
     ],

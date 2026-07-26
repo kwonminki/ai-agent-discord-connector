@@ -7,6 +7,7 @@ import {
   disposeCodexPersistentAppServers,
   interruptActiveCodexAppServerTurn,
   runCodexAppServerPrompt,
+  setCodexSessionIdleNotificationSink,
   steerActiveCodexAppServerTurn,
 } from "./codexAppServerRunner.js";
 import {
@@ -191,8 +192,13 @@ export async function startDirectWorker(options: {
   await store.initialize();
 
   setClaudeSessionIdleNotificationSink((notification) => {
-    store.appendClaudeSessionNotification(notification).catch((error) => {
+    store.appendClaudeSessionNotification({ ...notification, agent: "claude" }).catch((error) => {
       console.error("direct-worker failed to persist Claude idle notification", error);
+    });
+  });
+  setCodexSessionIdleNotificationSink((notification) => {
+    store.appendClaudeSessionNotification({ ...notification, agent: "codex" }).catch((error) => {
+      console.error("direct-worker failed to persist Codex idle notification", error);
     });
   });
 
@@ -409,6 +415,7 @@ export async function startDirectWorker(options: {
       await disposeClaudePersistentSessions("worker-stop");
       await disposeCodexPersistentAppServers();
       setClaudeSessionIdleNotificationSink(null);
+      setCodexSessionIdleNotificationSink(null);
       await releaseLock();
     })();
     return stopPromise;

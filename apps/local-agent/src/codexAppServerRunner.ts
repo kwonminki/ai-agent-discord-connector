@@ -21,6 +21,18 @@ interface RunCodexAppServerPromptInput extends RunCodexPromptInput {
   appServerUrl?: string;
 }
 
+export interface CodexSessionIdleNotification {
+  controlKey: string;
+  sessionId: string | null;
+  message: string;
+  isError: boolean;
+  at: string;
+}
+
+type CodexSessionIdleNotificationSink = (
+  notification: CodexSessionIdleNotification,
+) => Promise<void> | void;
+
 interface AppServerTransport {
   listenUrl: string;
   clientUrl: string;
@@ -846,6 +858,7 @@ const CODEX_AUTO_COMPACT_COOLDOWN_MS = 5 * 60_000;
 const CODEX_AUTO_COMPACT_TIMEOUT_MS = 5 * 60_000;
 const codexAutoCompactLastRunByThread = new Map<string, number>();
 const codexAutoCompactInFlightThreads = new Set<string>();
+let codexIdleNotificationSink: CodexSessionIdleNotificationSink | null = null;
 
 export interface CodexThreadTokenUsage {
   contextTokens: number;
@@ -855,6 +868,12 @@ export interface CodexThreadTokenUsage {
 export function codexAutoCompactPercent(): number {
   const parsed = Number.parseInt(process.env.CODEX_DISCORD_CODEX_AUTO_COMPACT_PCT ?? "", 10);
   return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 95) : 60;
+}
+
+export function setCodexSessionIdleNotificationSink(
+  sink: CodexSessionIdleNotificationSink | null,
+): void {
+  codexIdleNotificationSink = sink;
 }
 
 function codexContextWindowTokens(windowTokens: number | null): number {
@@ -874,9 +893,8 @@ function threadTokenUsageFromNotification(params: Record<string, unknown>): Code
       }
     | undefined;
   const last = tokenUsage?.last;
-  const contextTokens =
-    (typeof last?.inputTokens === "number" ? last.inputTokens : 0) +
-    (typeof last?.cachedInputTokens === "number" ? last.cachedInputTokens : 0);
+  // Codex reports cached input as a subset of inputTokens.
+  const contextTokens = typeof last?.inputTokens === "number" ? last.inputTokens : 0;
 
   if (contextTokens <= 0) {
     return null;
@@ -921,6 +939,7 @@ function maybeStartDetachedCodexCompaction(input: {
   }
 
   const threadId = input.threadId;
+  const usageSummary = `${Math.round(input.usage.contextTokens / 1_000)}k/${Math.round(windowTokens / 1_000)}k 토큰`;
   codexAutoCompactInFlightThreads.add(threadId);
   codexAutoCompactLastRunByThread.set(threadId, Date.now());
 
@@ -930,12 +949,55 @@ function maybeStartDetachedCodexCompaction(input: {
     cwd: input.cwd,
     promptInput: input.promptInput,
   })
+    .then(() => {
+      emitCodexAutoCompactNotification({
+        promptInput: input.promptInput,
+        threadId,
+        message: `🧹 컨텍스트 자동 압축 완료 — 사용량이 ${usageSummary}(${percent}% 초과)에 도달해 대화를 압축했습니다. 대화는 그대로 이어집니다.`,
+        isError: false,
+      });
+    })
     .catch((error) => {
       console.warn(`codex auto-compact failed for thread ${threadId}`, error);
+      emitCodexAutoCompactNotification({
+        promptInput: input.promptInput,
+        threadId,
+        message: `⚠️ 컨텍스트 자동 압축 시도(${usageSummary})가 완료되지 않았습니다: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        isError: true,
+      });
     })
     .finally(() => {
       codexAutoCompactInFlightThreads.delete(threadId);
     });
+}
+
+function emitCodexAutoCompactNotification(input: {
+  promptInput: RunCodexAppServerPromptInput;
+  threadId: string;
+  message: string;
+  isError: boolean;
+}): void {
+  const controlKey = input.promptInput.controlKey?.trim();
+
+  if (!controlKey || !codexIdleNotificationSink) {
+    return;
+  }
+
+  try {
+    void Promise.resolve(codexIdleNotificationSink({
+      controlKey,
+      sessionId: input.threadId,
+      message: input.message,
+      isError: input.isError,
+      at: new Date().toISOString(),
+    })).catch((error) => {
+      console.warn("codex auto-compact notification failed", error);
+    });
+  } catch (error) {
+    console.warn("codex auto-compact notification failed", error);
+  }
 }
 
 async function runDetachedCodexCompaction(input: {
@@ -979,12 +1041,17 @@ async function runDetachedCodexCompaction(input: {
   };
 
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
     const overallTimer = setTimeout(() => {
-      reject(new Error("Codex compaction timed out."));
+      finish(new Error("Codex compaction timed out."));
     }, CODEX_AUTO_COMPACT_TIMEOUT_MS);
     overallTimer.unref();
 
     const finish = (error?: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearTimeout(overallTimer);
       cleanup();
       if (error) {
@@ -995,7 +1062,7 @@ async function runDetachedCodexCompaction(input: {
     };
 
     socket.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
-    socket.on("close", () => finish());
+    socket.on("close", () => finish(new Error("Codex compaction socket closed before completion.")));
 
     socket.on("message", (raw) => {
       let message: { id?: number; method?: string; error?: { message?: string }; result?: unknown };

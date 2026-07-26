@@ -82,4 +82,38 @@ describe("deliverClaudeIdleNotifications", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("formats Codex background notifications for the same delivery channel", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-idle-notify-"));
+    const store = createDirectWorkerStore(path.join(tempRoot, "worker"));
+    const sent: Array<{ channelId: string; content: string | DiscordMessagePayload }> = [];
+    const guild = {
+      sendTextMessage: async (channelId: string, content: string | DiscordMessagePayload) => {
+        sent.push({ channelId, content });
+        return { id: "message-codex-1" };
+      },
+    };
+
+    try {
+      await store.initialize();
+      await store.appendClaudeSessionNotification({
+        at: new Date().toISOString(),
+        controlKey: "987654321",
+        sessionId: "codex-session-7",
+        message: "🧹 컨텍스트 자동 압축 완료",
+        isError: false,
+        agent: "codex",
+      });
+
+      await deliverClaudeIdleNotifications({ guild, source: store });
+
+      const payload = sent[0]?.content as DiscordMessagePayload;
+      expect(payload.content).toContain("Codex 세션 알림");
+      expect(payload.content).toContain("codex-session-7");
+      expect(payload.content).not.toContain("Claude Code");
+      expect(payload.embeds?.[0]?.description).toContain("🧹 컨텍스트 자동 압축 완료");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });
