@@ -8,7 +8,20 @@ import type {
   DiscordSelectMenuPayload,
 } from "./responses.js";
 
-const ANSWER_TITLES = new Set(["답변", "답변 (계속)", "Answer", "Answer (continued)"]);
+const ANSWER_TITLES = new Set([
+  "답변",
+  "답변 (계속)",
+  "중간 답변",
+  "중간 답변 (계속)",
+  "Answer",
+  "Answer (continued)",
+  "Intermediate answer",
+  "Intermediate answer (continued)",
+  "中间答复",
+  "中间答复（续）",
+  "中間回答",
+  "中間回答（続き）",
+]);
 const RAW_FIELD_NAMES = new Set([
   "Prompt",
   "Command",

@@ -16,6 +16,8 @@ Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI 
 > **Codex goal이 자동 연속 turn으로 넘어가도 Discord의 후속 지시가 현재 실행 중인 turn을 다시 찾아 전달됩니다.**
 >
 > 이전에는 장기 goal이 다음 turn으로 자동 진행하면 Discord가 기억한 turn ID와 실제 활성 turn ID가 달라져 steering이 간헐적으로 실패했습니다. 이제 connector가 이 불일치를 감지하고 같은 thread의 최신 `inProgress` turn을 조회한 뒤 한 번 안전하게 재시도합니다. 일반 작업과 Claude Code의 stdin 기반 steering 동작은 그대로 유지됩니다.
+>
+> Goal이 아직 `active`, `paused`, `blocked`, `usageLimited`, `budgetLimited` 상태인 turn의 답변은 Discord에 **중간 답변**으로 표시하고 Operator를 멘션합니다. Goal 상태가 실제 `complete`가 된 마지막 turn은 **작업 완료**로 구분해 다시 알립니다.
 
 > ### NEW · 상주 Agent 세션 — 예약과 백그라운드 작업이 실제로 돌아갑니다
 > **Claude Code 세션이 메시지 사이에도 살아 있어, 채팅이 끝난 뒤에 발화한 예약(cron)·백그라운드 작업 결과가 Discord로 도착합니다.**
@@ -146,7 +148,7 @@ Discord 메시지에 이미지, 영상, 오디오, 문서 또는 압축 파일�
 전용 private Discord 서버라면 설치 에이전트가 서버 전체의 기본 알림을 **멘션만(Only @mentions)** 으로 설정합니다. 공유 서버에서는 다른 채널과 사용자에게 영향을 줄 수 있으므로 먼저 동의를 받습니다.
 
 - 중요한 중간 설명은 태그 없이 조용히 쌓입니다.
-- 질문, 권한 요청, 최종 완료와 실패는 Operator 역할 멘션으로 알림이 옵니다.
+- 질문, 권한 요청, 중간 답변, 최종 완료와 실패는 Operator 역할 멘션으로 알림이 옵니다.
 - 긴 최종 답변은 여러 메시지 또는 원문 텍스트 파일로 전달됩니다.
 - Discord의 사용자별 채널 알림 override는 bot이 변경할 수 없습니다. 예전에 직접 다른 값으로 바꾼 채널만 사용자가 **멘션만**으로 되돌리면 됩니다.
 

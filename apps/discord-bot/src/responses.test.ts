@@ -455,6 +455,37 @@ describe("responses", () => {
     });
   });
 
+  it("formats active Codex goal turns as intermediate answers", () => {
+    expect(
+      formatAgentResultUpdate(
+        {
+          computerDisplayName: "Local Dev",
+          workspaceDisplayName: "CodexDiscordConnector",
+          cwd: "/repo",
+          prompt: "장기 작업을 계속해줘",
+        },
+        {
+          result: {
+            status: "completed",
+            finalMessage: "첫 번째 단계까지 마쳤습니다.",
+            sessionId: "session-1",
+            goalStatus: "active",
+          },
+        },
+      ),
+    ).toEqual({
+      allowedMentions: { parse: [] },
+      content: "**Codex 중간 답변**\n위치: `/repo`\n세션 ID: `session-1`\nGoal 상태: `active`",
+      embeds: [
+        {
+          title: "중간 답변",
+          color: 0x3498db,
+          description: "첫 번째 단계까지 마쳤습니다.",
+        },
+      ],
+    });
+  });
+
   it("does not add Codex app controls when a real session id is present", () => {
     const sessionId = "019db2be-b2b3-7e82-9e61-8c84b28ad287";
     const payload = formatAgentResultUpdate(

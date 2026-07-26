@@ -14,6 +14,7 @@ function session(input: {
   assistantAnswer?: string;
   realtimeAssistantAnswer?: string;
   realtimeEvents?: DiscoveredCodexSession["realtimeEvents"];
+  goalStatus?: DiscoveredCodexSession["goalStatus"];
 }): DiscoveredCodexSession {
   const realtimeEvents = [
     ...(input.realtimeEvents ?? []),
@@ -30,6 +31,7 @@ function session(input: {
     threadName: input.threadName ?? "Build feature",
     updatedAt: "2026-04-24T01:00:00.000Z",
     cwdHint: input.cwdHint ?? "/repo",
+    ...(input.goalStatus ? { goalStatus: input.goalStatus } : {}),
     contextPreview: input.assistantAnswer
       ? [{ role: "assistant" as const, text: input.assistantAnswer }]
       : [],
@@ -195,6 +197,92 @@ describe("notifyCodexTaskCompletions", () => {
         "thread-1",
         expect.objectContaining({
           content: expect.stringContaining("Codex 작업 완료"),
+        }),
+        { mentionRoleIds: ["operator-role"] },
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("mentions both active-goal intermediate answers and the true completion", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-task-goal-notifications-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const sendTextMessage = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      await notifyCodexTaskCompletions({
+        guild: { sendTextMessage },
+        stateStore,
+        adminChannelId: "admin-channel",
+        sessions: [],
+      });
+      const state = await stateStore.read();
+      await stateStore.write({
+        ...state,
+        sessionChannels: [
+          {
+            codexSessionId: "session-1",
+            threadName: "Long goal",
+            updatedAt: "2026-04-24T01:00:00.000Z",
+            cwd: "/repo",
+            workspaceRoot: "/repo",
+            workspaceDisplayName: "repo",
+            discordCategoryId: null,
+            discordChannelId: "thread-1",
+            discordParentChannelId: "admin-channel",
+            discordDeliveryMode: "thread",
+            channelName: "long-goal",
+            computerId: "local-dev",
+            workspaceId: "local-dev:/repo",
+          },
+        ],
+      });
+
+      await notifyCodexTaskCompletions({
+        guild: { sendTextMessage },
+        stateStore,
+        adminChannelId: "admin-channel",
+        sessions: [
+          session({
+            completionKey: "goal-turn-1",
+            assistantAnswer: "첫 단계 결과입니다.",
+            goalStatus: "active",
+          }),
+        ],
+        mentionRoleIds: ["operator-role"],
+      });
+
+      expect(sendTextMessage).toHaveBeenNthCalledWith(
+        1,
+        "thread-1",
+        expect.objectContaining({
+          content: expect.stringContaining("Codex 중간 답변"),
+          embeds: [expect.objectContaining({ title: "중간 답변" })],
+        }),
+        { mentionRoleIds: ["operator-role"] },
+      );
+
+      await notifyCodexTaskCompletions({
+        guild: { sendTextMessage },
+        stateStore,
+        adminChannelId: "admin-channel",
+        sessions: [
+          session({
+            completionKey: "goal-turn-2",
+            assistantAnswer: "Goal 전체 작업을 마쳤습니다.",
+            goalStatus: "complete",
+          }),
+        ],
+        mentionRoleIds: ["operator-role"],
+      });
+
+      expect(sendTextMessage).toHaveBeenNthCalledWith(
+        2,
+        "thread-1",
+        expect.objectContaining({
+          content: expect.stringContaining("Codex 작업 완료"),
+          embeds: [expect.objectContaining({ title: "답변" })],
         }),
         { mentionRoleIds: ["operator-role"] },
       );

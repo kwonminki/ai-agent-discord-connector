@@ -20,9 +20,18 @@ export interface CodexSessionMeta {
 
 export interface DiscoveredCodexSession extends CodexSessionIndexEntry {
   cwdHint: string | null;
+  goalStatus?: CodexSessionGoalStatus;
   contextPreview?: CodexSessionContextMessage[];
   realtimeEvents?: CodexSessionRealtimeEvent[];
 }
+
+export type CodexSessionGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
 
 export interface DiscoverCodexSessionsOptions {
   activeOnly?: boolean;
@@ -73,6 +82,14 @@ interface CachedThreadStates {
   states: Map<string, CodexThreadState>;
 }
 
+interface CachedGoalStatuses {
+  mtimeMs: number;
+  size: number;
+  walMtimeMs: number;
+  walSize: number;
+  statuses: Map<string, CodexSessionGoalStatus>;
+}
+
 interface CachedSessionIndex {
   mtimeMs: number;
   size: number;
@@ -98,6 +115,7 @@ const sessionDetailsCache = new Map<string, CachedSessionDetails>();
 const sessionFilePathCache = new Map<string, string>();
 const sessionIndexCache = new Map<string, CachedSessionIndex>();
 const threadStatesCache = new Map<string, CachedThreadStates>();
+const goalStatusesCache = new Map<string, CachedGoalStatuses>();
 const directoryEntriesCache = new Map<string, CachedDirectoryEntries>();
 
 export function parseSessionIndexLine(line: string): CodexSessionIndexEntry {
@@ -192,9 +210,10 @@ export async function discoverCodexSessions(
   }
 
   const sessionsRoot = path.join(codexHome, "sessions");
-  const [archivedSessionIds, threadStates] = await Promise.all([
+  const [archivedSessionIds, threadStates, goalStatuses] = await Promise.all([
     buildArchivedSessionIds(path.join(codexHome, "archived_sessions")),
     readCodexThreadStates(codexHome),
+    readCodexGoalStatuses(codexHome),
   ]);
   const entries = indexEntries ?? [];
 
@@ -232,6 +251,7 @@ export async function discoverCodexSessions(
       return {
         ...entry,
         cwdHint: details.cwdHint,
+        ...(goalStatuses.get(entry.id) ? { goalStatus: goalStatuses.get(entry.id) } : {}),
         ...(details.contextPreview ? { contextPreview: details.contextPreview } : {}),
         ...(details.realtimeEvents ? { realtimeEvents: details.realtimeEvents } : {}),
       };
@@ -702,6 +722,92 @@ async function readCodexThreadStates(codexHome: string): Promise<Map<string, Cod
   }
 }
 
+async function readCodexGoalStatuses(codexHome: string): Promise<Map<string, CodexSessionGoalStatus>> {
+  const databasePath = await findCodexVersionedDatabase(codexHome, "goals");
+
+  if (!databasePath) {
+    return new Map();
+  }
+
+  const [stats, walStats] = await Promise.all([
+    statIfExists(databasePath),
+    statIfExists(`${databasePath}-wal`),
+  ]);
+
+  if (!stats) {
+    return new Map();
+  }
+
+  const cached = goalStatusesCache.get(databasePath);
+  const walMtimeMs = walStats?.mtimeMs ?? 0;
+  const walSize = walStats?.size ?? 0;
+
+  if (
+    cached &&
+    cached.mtimeMs === stats.mtimeMs &&
+    cached.size === stats.size &&
+    cached.walMtimeMs === walMtimeMs &&
+    cached.walSize === walSize
+  ) {
+    return cached.statuses;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "sqlite3",
+      [
+        databasePath,
+        `select thread_id || char(31) || status from thread_goals;`,
+      ],
+      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+    );
+    const statuses = parseCodexGoalStatusRows(stdout);
+
+    goalStatusesCache.set(databasePath, {
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      walMtimeMs,
+      walSize,
+      statuses,
+    });
+
+    return statuses;
+  } catch {
+    return new Map();
+  }
+}
+
+function parseCodexGoalStatusRows(stdout: string): Map<string, CodexSessionGoalStatus> {
+  const statuses = new Map<string, CodexSessionGoalStatus>();
+
+  for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+    const [threadId, rawStatus] = line.split(SQLITE_SEPARATOR);
+    const status = normalizeCodexGoalStatus(rawStatus);
+
+    if (threadId && status) {
+      statuses.set(threadId, status);
+    }
+  }
+
+  return statuses;
+}
+
+function normalizeCodexGoalStatus(value: string | undefined): CodexSessionGoalStatus | null {
+  switch (value) {
+    case "active":
+    case "paused":
+    case "blocked":
+    case "complete":
+      return value;
+    case "usage_limited":
+      return "usageLimited";
+    case "budget_limited":
+      return "budgetLimited";
+    default:
+      return null;
+  }
+}
+
 function parseCodexThreadStateRows(stdout: string): Map<string, CodexThreadState> {
   const states = new Map<string, CodexThreadState>();
 
@@ -1060,6 +1166,10 @@ function truncateContextText(value: string, maxChars: number): string {
 }
 
 async function findCodexStateDatabase(codexHome: string): Promise<string | null> {
+  return findCodexVersionedDatabase(codexHome, "state");
+}
+
+async function findCodexVersionedDatabase(codexHome: string, prefix: string): Promise<string | null> {
   let entries: import("node:fs").Dirent[];
 
   try {
@@ -1075,7 +1185,7 @@ async function findCodexStateDatabase(codexHome: string): Promise<string | null>
   const candidates = entries
     .filter((entry) => entry.isFile())
     .map((entry) => {
-      const match = entry.name.match(/^state_(\d+)\.sqlite$/);
+      const match = entry.name.match(new RegExp(`^${prefix}_(\\d+)\\.sqlite$`));
       return match
         ? {
             version: Number.parseInt(match[1], 10),

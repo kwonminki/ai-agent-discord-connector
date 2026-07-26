@@ -78,12 +78,21 @@ export type CodexRunnerProgressEvent =
   | { type: "operation-progress"; label: string; detail?: string; eventType: string }
   | { type: "codex-event"; eventType: string };
 
+export type CodexGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
 export interface RunCodexPromptResult {
   status: "completed" | "failed";
   finalMessage: string;
   sessionId: string | null;
   stderr: string;
   exitCode: number | null;
+  goalStatus?: CodexGoalStatus;
   errorCode?: string;
   signal?: string | null;
   timedOut?: boolean;

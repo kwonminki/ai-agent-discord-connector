@@ -3545,7 +3545,15 @@ export function formatLiveAgentProgress(input: {
 export function formatAgentResultPosted(input: {
   agentLabel: "Codex" | "Claude Code";
   failed: boolean;
+  intermediate?: boolean;
 }): DiscordMessagePayload {
+  if (input.intermediate && !input.failed) {
+    return textPayload([
+      `**${input.agentLabel} 중간 답변 수신**`,
+      "현재 turn의 답변을 아래 새 메시지에 표시했습니다. Goal 작업은 계속 실행 중입니다.",
+    ].join("\n"));
+  }
+
   return textPayload([
     `**${input.agentLabel} 요청 처리 ${input.failed ? "실패" : "완료"}**`,
     input.failed ? "오류 내용을 아래 새 메시지에 표시했습니다." : "최종 답변을 아래 새 메시지에 표시했습니다.",
@@ -3768,8 +3776,10 @@ export function formatAgentResultUpdate(
     sessionId?: unknown;
     stderr?: unknown;
     errorCode?: unknown;
+    goalStatus?: unknown;
   } | undefined;
   const failed = Boolean(response.error) || result?.status === "failed";
+  const intermediate = !failed && agentLabel(input) === "Codex" && isIntermediateAgentResult(response);
   const resultFinalMessage = typeof result?.finalMessage === "string" && result.finalMessage.trim().length > 0
     ? result.finalMessage
     : null;
@@ -3865,7 +3875,7 @@ export function formatAgentResultUpdate(
     const answerColor = currentAgentLabel === "Claude Code" ? 0x8e44ad : COLORS.codex;
     const continuationPayloads = finalTextChunks.slice(1).map((chunk) =>
       messagePayload({
-        title: "답변 (계속)",
+        title: intermediate ? "중간 답변 (계속)" : "답변 (계속)",
         color: answerColor,
         description: chunk,
       }),
@@ -3883,18 +3893,19 @@ export function formatAgentResultUpdate(
       }),
     );
     const metadataLines = [
-      `**${currentAgentLabel} 작업 완료**`,
+      `**${currentAgentLabel} ${intermediate ? "중간 답변" : "작업 완료"}**`,
       `위치: ${wrapDiscordText(input.cwd)}`,
       sessionId
         ? `${currentAgentLabel === "Claude Code" ? "Claude session" : "세션 ID"}: ${wrapDiscordText(sessionId)}`
         : null,
+      intermediate ? `Goal 상태: ${wrapDiscordText(String(result?.goalStatus ?? "active"))}` : null,
     ].filter((line): line is string => Boolean(line));
     const payload: DiscordMessagePayload = {
       allowedMentions: { parse: [] },
       content: metadataLines.join("\n"),
       embeds: [
         {
-          title: "답변",
+          title: intermediate ? "중간 답변" : "답변",
           color: answerColor,
           description: finalTextForDiscord,
         },
@@ -3919,6 +3930,21 @@ export function formatAgentResultUpdate(
   });
 
   return payload;
+}
+
+export function isIntermediateAgentResult(response: {
+  result?: unknown;
+  error?: unknown;
+}): boolean {
+  if (response.error || typeof response.result !== "object" || response.result === null) {
+    return false;
+  }
+
+  const result = response.result as { status?: unknown; goalStatus?: unknown };
+  return result.status !== "failed" &&
+    typeof result.goalStatus === "string" &&
+    result.goalStatus.length > 0 &&
+    result.goalStatus !== "complete";
 }
 
 function scheduleDescription(schedule: ScheduledCommandState): string {

@@ -16,6 +16,8 @@ A personal bridge for using **AI agents such as Codex and Claude Code running on
 > **Discord follow-ups now find the current active turn even after a Codex goal advances through automatic continuation turns.**
 >
 > Previously, a long-running goal could move to a new turn while Discord still held the original turn ID, causing intermittent steering failures. The connector now detects that mismatch, reads the latest `inProgress` turn in the same thread, and retries once safely. Ordinary work and Claude Code's stdin-based steering behavior remain unchanged.
+>
+> Answers from turns whose goal is still `active`, `paused`, `blocked`, `usageLimited`, or `budgetLimited` are shown as **intermediate answers** and mention the Operator. The final turn whose goal status is actually `complete` is clearly announced again as **Task completed**.
 
 > ### NEW · Persistent agent sessions — schedules and background work actually run
 > **Claude Code sessions now stay alive between messages, so in-session schedules (cron) and background tasks keep running after the chat goes quiet, and their results arrive back in Discord.**

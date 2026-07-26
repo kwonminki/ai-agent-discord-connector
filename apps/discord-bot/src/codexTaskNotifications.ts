@@ -84,6 +84,10 @@ function latestAssistantAnswer(session: DiscoveredCodexSession): string | null {
   return realtimeAnswer?.trim() || null;
 }
 
+function hasIncompleteGoal(session: DiscoveredCodexSession): boolean {
+  return Boolean(session.goalStatus && session.goalStatus !== "complete");
+}
+
 function nextNotificationState(input: {
   session: DiscoveredCodexSession;
   eventKey: string;
@@ -100,7 +104,7 @@ function nextNotificationState(input: {
 
 function formatTaskCompleteNotification(
   session: DiscoveredCodexSession,
-  options: { includeAnswer: boolean } = { includeAnswer: true },
+  options: { includeAnswer: boolean; intermediate?: boolean } = { includeAnswer: true },
 ): DiscordMessagePayload {
   const threadName = sanitizeInline(session.threadName) || session.id.slice(0, 8);
   const cwd = sanitizeInline(session.cwdHint);
@@ -110,12 +114,14 @@ function formatTaskCompleteNotification(
   const preparedAnswer = rawAnswer
     ? prepareAgentCompletionAnswer({ agent: "codex", answer: rawAnswer, attachmentName: ANSWER_ATTACHMENT_NAME })
     : null;
+  const intermediate = options.intermediate === true;
   const lines = [
-    "**Codex 작업 완료**",
+    `**Codex ${intermediate ? "중간 답변" : "작업 완료"}**`,
     `세션: \`${threadName}\``,
     cwd ? `위치: \`${cwd}\`` : null,
     updatedAt ? `업데이트: \`${updatedAt}\`` : null,
     `세션 ID: \`${session.id}\``,
+    intermediate ? `Goal 상태: \`${session.goalStatus}\`` : null,
   ].filter((line): line is string => Boolean(line));
 
   const payload: DiscordMessagePayload = {
@@ -124,7 +130,7 @@ function formatTaskCompleteNotification(
     embeds: preparedAnswer
       ? [
           {
-            title: "답변",
+            title: intermediate ? "중간 답변" : "답변",
             color: ANSWER_EMBED_COLOR,
             description: preparedAnswer.description,
           },
@@ -395,6 +401,7 @@ export async function notifyCodexTaskCompletions(
 
     const omitAnswerForDiscordRequest = Boolean(discordRequest);
     const completionMentionAlreadySent = discordRequest?.completionMentionSent === true;
+    const intermediate = hasIncompleteGoal(session);
 
     notificationsBySession.set(
       sessionKey,
@@ -415,6 +422,7 @@ export async function notifyCodexTaskCompletions(
       const targetChannelId = discordRequest?.discordChannelId ?? syncedChannel?.discordChannelId ?? input.adminChannelId;
       const notification = formatTaskCompleteNotification(session, {
         includeAnswer: !omitAnswerForDiscordRequest,
+        intermediate,
       });
       const continuations = getAgentResultContinuationMessages(notification);
       const operatorRoleIds = input.mentionRoleIds?.filter((roleId) => roleId.trim().length > 0) ?? [];

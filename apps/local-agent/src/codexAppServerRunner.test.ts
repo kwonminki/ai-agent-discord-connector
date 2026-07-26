@@ -444,6 +444,20 @@ describe("runCodexAppServerPrompt", () => {
             );
             socket.send(
               JSON.stringify({
+                method: "thread/goal/updated",
+                params: {
+                  threadId: "thread-1",
+                  turnId: "turn-1",
+                  goal: {
+                    threadId: "thread-1",
+                    objective: "장기 작업을 끝낸다",
+                    status: "active",
+                  },
+                },
+              }),
+            );
+            socket.send(
+              JSON.stringify({
                 method: "turn/completed",
                 params: {
                   threadId: "thread-1",
@@ -481,6 +495,7 @@ describe("runCodexAppServerPrompt", () => {
         finalMessage: "완료했습니다.",
         sessionId: "thread-1",
         exitCode: 0,
+        goalStatus: "active",
       });
       expect(finalProgressDelivered).toBe(true);
       expect(events.at(-1)).toEqual({ type: "agent-message", text: "완료했습니다." });

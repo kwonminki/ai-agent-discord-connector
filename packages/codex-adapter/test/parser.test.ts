@@ -29,6 +29,10 @@ async function createCodexStateDatabase(codexHome: string, sql: string) {
   await execFileAsync("sqlite3", [path.join(codexHome, "state_5.sqlite"), sql]);
 }
 
+async function createCodexGoalsDatabase(codexHome: string, sql: string) {
+  await execFileAsync("sqlite3", [path.join(codexHome, "goals_1.sqlite"), sql]);
+}
+
 describe("codex parser", () => {
   it("parses session index entries", () => {
     expect(
@@ -88,6 +92,36 @@ describe("codex parser", () => {
     ]);
 
     await fs.rm(codexHome, { recursive: true, force: true });
+  });
+
+  it("includes persisted Codex goal status for session completion classification", async () => {
+    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-adapter-"));
+    const sessionId = "019db2be-b2b3-7e82-9e61-8c84b28ad287";
+
+    try {
+      await writeSessionIndex(codexHome, [
+        { id: sessionId, name: "Long goal", updatedAt: "2026-04-22T01:15:24.714Z" },
+      ]);
+      await createCodexGoalsDatabase(
+        codexHome,
+        [
+          "create table thread_goals (thread_id text primary key, status text not null);",
+          `insert into thread_goals values ('${sessionId}', 'usage_limited');`,
+        ].join("\n"),
+      );
+
+      await expect(discoverCodexSessions(codexHome)).resolves.toEqual([
+        {
+          id: sessionId,
+          threadName: "Long goal",
+          updatedAt: "2026-04-22T01:15:24.714Z",
+          cwdHint: null,
+          goalStatus: "usageLimited",
+        },
+      ]);
+    } finally {
+      await fs.rm(codexHome, { recursive: true, force: true });
+    }
   });
 
   it("skips malformed index lines and keeps valid sessions", async () => {

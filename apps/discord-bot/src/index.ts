@@ -715,6 +715,16 @@ export async function startBot(): Promise<void> {
     createForkedSessionThread,
     discardForkedSessionThread,
     linkNewCodexSession,
+    resolveCodexGoalStatus: listDirectCodexSessions
+      ? async (sessionId) => {
+          const sessions = await listDirectCodexSessions({
+            activeOnly: false,
+            includeExecSessions: true,
+            includeSessionIds: [sessionId],
+          });
+          return sessions.find((session) => session.id === sessionId)?.goalStatus ?? null;
+        }
+      : undefined,
     recordClaudeSession: directStateStore
       ? (input) =>
           directStateStore.updateSessionChannelClaudeSession(input.discordChannelId, input.claudeSessionId)

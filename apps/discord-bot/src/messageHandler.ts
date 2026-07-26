@@ -63,6 +63,7 @@ import {
   formatForkSessionResult,
   formatAgentResultPosted,
   formatLiveAgentProgress,
+  isIntermediateAgentResult,
   splitDiscordMessageContent,
   formatMaintenancePanel,
   formatNewChatAck,
@@ -244,6 +245,7 @@ export interface CreateDiscordMessageHandlerInput {
     sessionId: string,
     options?: { discordChannelId?: string | null; completionMentionSent?: boolean },
   ) => Promise<void> | void;
+  resolveCodexGoalStatus?: (sessionId: string) => Promise<string | null>;
   reloadBot?: (input: {
     mode: "commands" | "restart";
     execution: BotReloadExecutionState;
@@ -465,6 +467,7 @@ async function sendThreadCompletionMention(input: {
   channelContext: ManagedDiscordChannelContext;
   agentLabel: "Codex" | "Claude Code";
   failed: boolean;
+  intermediate?: boolean;
   deferForPendingRequest?: boolean;
   pendingRequestCount?: number;
 }): Promise<"sent" | "deferred" | "unavailable"> {
@@ -485,7 +488,12 @@ async function sendThreadCompletionMention(input: {
   }
 
   const pendingRequestCount = input.pendingRequestCount ?? 0;
-  const completionText = `**${input.agentLabel} 작업 ${input.failed ? "실패" : "완료"}**${
+  const resultLabel = input.failed
+    ? "작업 실패"
+    : input.intermediate
+      ? "중간 답변"
+      : "작업 완료";
+  const completionText = `**${input.agentLabel} ${resultLabel}**${
     pendingRequestCount > 0 ? ` — 대기열 ${pendingRequestCount}개를 이어서 진행합니다` : ""
   }`;
 
@@ -614,6 +622,28 @@ function withAgentMessageFallback<T extends { result?: unknown; error?: unknown 
     result: {
       ...response.result,
       finalMessage: fallback,
+    },
+  };
+}
+
+function withCodexGoalStatus<T extends { result?: unknown; error?: unknown }>(
+  response: T,
+  goalStatus: string | null,
+): T {
+  if (!goalStatus || response.error || typeof response.result !== "object" || response.result === null) {
+    return response;
+  }
+
+  const existingGoalStatus = (response.result as { goalStatus?: unknown }).goalStatus;
+  if (typeof existingGoalStatus === "string" && existingGoalStatus.length > 0) {
+    return response;
+  }
+
+  return {
+    ...response,
+    result: {
+      ...response.result,
+      goalStatus,
     },
   };
 }
@@ -2607,8 +2637,21 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           onUserInputRequest: (request) => requestCodexUserInput(reply, replyWithRoleMentions, message.channelId, request),
         });
         progressReporter.finish();
-        const responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
         const nextSessionId = extractAgentResponseSessionId(response);
+        let responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+
+        if (nextSessionId && input.resolveCodexGoalStatus && !isIntermediateAgentResult(responseForDisplay)) {
+          try {
+            responseForDisplay = withCodexGoalStatus(
+              responseForDisplay,
+              await input.resolveCodexGoalStatus(nextSessionId),
+            );
+          } catch (error) {
+            console.warn("discord-bot failed to resolve Codex goal status", error);
+          }
+        }
+
+        const responseIntermediate = isIntermediateAgentResult(responseForDisplay);
 
         if (nextSessionId) {
           if (routed.type === "codex-chat") {
@@ -2650,7 +2693,11 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           fallbackReply: (replyMessage) => reply(replyMessage),
           payload: resultPayload,
           postAsNewMessage: channelContext.discordDeliveryMode === "thread",
-          terminalPayload: formatAgentResultPosted({ agentLabel: "Codex", failed: responseFailed }),
+          terminalPayload: formatAgentResultPosted({
+            agentLabel: "Codex",
+            failed: responseFailed,
+            intermediate: responseIntermediate,
+          }),
           questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
         });
         await sendAgentRelayCallback({
@@ -2665,6 +2712,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           channelContext,
           agentLabel: "Codex",
           failed: responseFailed,
+          intermediate: responseIntermediate,
           deferForPendingRequest: questionMentionSent,
           pendingRequestCount: channelPendingAgentRequestCount(message.channelId, channelContext),
         });

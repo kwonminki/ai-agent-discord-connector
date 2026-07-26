@@ -777,6 +777,77 @@ describe("createDiscordMessageHandler", () => {
     );
   });
 
+  it("posts active-goal Codex results as intermediate answers with an operator mention", async () => {
+    const edits: unknown[] = [];
+    const sendTextMessage = vi.fn().mockResolvedValue({ id: "message-1" });
+    const markDiscordRequestedCodexSession = vi.fn().mockResolvedValue(undefined);
+    const resolveCodexGoalStatus = vi.fn().mockResolvedValue("active");
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        codexSessionId: "session-1",
+        discordDeliveryMode: "thread",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt: vi.fn().mockResolvedValue({
+        jobId: "job-1",
+        result: {
+          status: "completed",
+          finalMessage: "현재 단계 결과입니다.",
+          sessionId: "session-1",
+        },
+      }),
+      markDiscordRequestedCodexSession,
+      resolveCodexGoalStatus,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    await handleMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "thread-1",
+      content: "장기 작업을 계속해줘",
+      roleIds: ["role-operator"],
+      guild: {
+        createCategory: vi.fn(),
+        createTextChannel: vi.fn(),
+        sendTextMessage,
+      },
+      reply: async () => ({
+        edit: async (payload: unknown) => {
+          edits.push(payload);
+        },
+      }),
+    });
+
+    expect(sendTextMessage).toHaveBeenCalledTimes(2);
+    expect(sendTextMessage).toHaveBeenNthCalledWith(
+      1,
+      "thread-1",
+      expect.objectContaining({
+        content: expect.stringContaining("**Codex 중간 답변**"),
+        embeds: [expect.objectContaining({ title: "중간 답변" })],
+      }),
+    );
+    expect(sendTextMessage).toHaveBeenNthCalledWith(
+      2,
+      "thread-1",
+      "**Codex 중간 답변**",
+      { mentionRoleIds: ["role-operator"] },
+    );
+    expect(edits.at(-1)).toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining("Codex 중간 답변 수신"),
+      }),
+    );
+    expect(markDiscordRequestedCodexSession).toHaveBeenCalledWith("session-1", {
+      discordChannelId: "thread-1",
+      completionMentionSent: true,
+    });
+    expect(resolveCodexGoalStatus).toHaveBeenCalledWith("session-1");
+  });
+
   it("steers an active Codex turn with an ordinary follow-up instead of queueing a new turn", async () => {
     let firstPromptWaiting = false;
     let finishFirstPrompt: (value: unknown) => void = () => {

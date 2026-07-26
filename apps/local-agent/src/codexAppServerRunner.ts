@@ -12,6 +12,7 @@ import type {
   CodexUserInputQuestion,
   CodexUserInputRequest,
   CodexUserInputResponse,
+  CodexGoalStatus,
   RunCodexPromptInput,
   RunCodexPromptResult,
 } from "./codexRunner.js";
@@ -171,6 +172,24 @@ function inProgressTurnId(response: unknown, expectedThreadId: string): string |
   }
 
   return null;
+}
+
+function codexGoalStatus(value: unknown): CodexGoalStatus | null {
+  switch (value) {
+    case "active":
+    case "paused":
+    case "blocked":
+    case "usageLimited":
+    case "budgetLimited":
+    case "complete":
+      return value;
+    case "usage_limited":
+      return "usageLimited";
+    case "budget_limited":
+      return "budgetLimited";
+    default:
+      return null;
+  }
 }
 
 export async function steerActiveCodexAppServerTurn(
@@ -1635,6 +1654,7 @@ async function runPromptAgainstAppServer(input: {
   let turnFinished = false;
   let activeTurnId: string | null = null;
   let finalMessage = "";
+  let goalStatus: CodexGoalStatus | null = null;
   const announcedSessionIds = new Set<string>();
   const agentMessageTextById = new Map<string, string>();
   const agentMessageOrder: string[] = [];
@@ -1821,6 +1841,17 @@ async function runPromptAgainstAppServer(input: {
           });
         }
       }
+      return;
+    }
+
+    if (method === "thread/goal/updated") {
+      const goal = objectParam(params.goal);
+      goalStatus = codexGoalStatus(goal.status);
+      return;
+    }
+
+    if (method === "thread/goal/cleared") {
+      goalStatus = null;
       return;
     }
 
@@ -2151,6 +2182,7 @@ async function runPromptAgainstAppServer(input: {
           sessionId,
           stderr: stderr(),
           exitCode: completed ? 0 : null,
+          ...(goalStatus ? { goalStatus } : {}),
         });
       });
     });
