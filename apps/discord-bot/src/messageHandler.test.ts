@@ -769,9 +769,14 @@ describe("createDiscordMessageHandler", () => {
       "**Codex 작업 완료**",
       { mentionRoleIds: ["role-operator"] },
     );
-    expect(markDiscordRequestedCodexSession).toHaveBeenCalledTimes(2);
+    expect(markDiscordRequestedCodexSession).toHaveBeenCalledTimes(4);
     expect(markDiscordRequestedCodexSession).toHaveBeenNthCalledWith(
       1,
+      "session-1",
+      { discordChannelId: "thread-1" },
+    );
+    expect(markDiscordRequestedCodexSession).toHaveBeenNthCalledWith(
+      2,
       "session-1",
       { discordChannelId: "thread-1", completionMentionSent: true },
     );
@@ -3296,7 +3301,7 @@ describe("createDiscordMessageHandler", () => {
     expect(edits.at(-1)).toEqual(expect.objectContaining({
       content: expect.stringContaining("최종 답변을 아래 새 메시지에 표시했습니다."),
     }));
-    expect(sendTextMessage).toHaveBeenCalledTimes(4);
+    expect(sendTextMessage).toHaveBeenCalledTimes(3);
     expect(sendTextMessage).toHaveBeenNthCalledWith(
       1,
       "thread-1",
@@ -3309,20 +3314,12 @@ describe("createDiscordMessageHandler", () => {
       2,
       "thread-1",
       expect.objectContaining({
-        allowedMentions: { parse: [] },
-        content: expect.stringContaining("수정을 완료했습니다."),
-      }),
-    );
-    expect(sendTextMessage).toHaveBeenNthCalledWith(
-      3,
-      "thread-1",
-      expect.objectContaining({
         content: expect.stringContaining("**Codex 작업 완료**"),
         embeds: [expect.objectContaining({ title: "답변", description: expect.stringContaining("수정을 완료했습니다.") })],
       }),
     );
     expect(sendTextMessage).toHaveBeenNthCalledWith(
-      4,
+      3,
       "thread-1",
       "**Codex 작업 완료**",
       { mentionRoleIds: ["role-operator"] },
@@ -3381,20 +3378,12 @@ describe("createDiscordMessageHandler", () => {
       2,
       "claude-thread-1",
       expect.objectContaining({
-        allowedMentions: { parse: [] },
-        content: expect.stringContaining("로그 확인을 마쳤습니다."),
-      }),
-    );
-    expect(sendTextMessage).toHaveBeenNthCalledWith(
-      3,
-      "claude-thread-1",
-      expect.objectContaining({
         content: expect.stringContaining("**Claude Code 작업 완료**"),
         embeds: [expect.objectContaining({ title: "답변", description: expect.stringContaining("로그 확인을 마쳤습니다.") })],
       }),
     );
     expect(sendTextMessage).toHaveBeenNthCalledWith(
-      4,
+      3,
       "claude-thread-1",
       "**Claude Code 작업 완료**",
       { mentionRoleIds: ["role-operator"] },

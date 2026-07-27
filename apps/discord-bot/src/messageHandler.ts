@@ -1264,9 +1264,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       text?: string;
       eventType?: string;
     }): Promise<void>;
-    finish(): void;
+    finish(finalMessage?: string | null): Promise<void>;
   } {
     let lastText: string | null = null;
+    let pendingAgentMessage: string | null = null;
     let sentCount = 0;
     let announcedTruncation = false;
 
@@ -1319,19 +1320,43 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
     return {
       async publish(event) {
-        if (event.type !== "agent-message" && event.type !== "agent-thought") {
+        if (event.type === "agent-message") {
+          const text = event.text?.trim() ?? "";
+
+          if (!text || text === pendingAgentMessage) {
+            return;
+          }
+
+          if (pendingAgentMessage) {
+            await send(pendingAgentMessage, "message");
+          }
+
+          pendingAgentMessage = text;
+          return;
+        }
+
+        if (pendingAgentMessage) {
+          await send(pendingAgentMessage, "message");
+          pendingAgentMessage = null;
+        }
+
+        if (event.type !== "agent-thought") {
           return;
         }
 
         const text = event.text?.trim() ?? "";
+        if (text) {
+          await send(text, "thought");
+        }
+      },
+      async finish(finalMessage) {
+        const pending = pendingAgentMessage;
+        pendingAgentMessage = null;
 
-        if (!text) {
-          return;
+        if (pending && pending !== finalMessage?.trim()) {
+          await send(pending, "message");
         }
 
-        await send(text, event.type === "agent-thought" ? "thought" : "message");
-      },
-      finish() {
         lastText = null;
       },
     };
@@ -2026,6 +2051,11 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           },
           onProgress: async (event) => {
             touchChannelActivity(message.channelId);
+            if (event.type === "thread-started") {
+              await input.markDiscordRequestedCodexSession?.(event.sessionId, {
+                discordChannelId: message.channelId,
+              });
+            }
             const status = event.type === "operation-progress" ? event.label : event.type;
             recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
             await progressReporter.publish(event);
@@ -2047,7 +2077,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           onApprovalRequest: (request) => requestCodexApproval(replyWithRoleMentions, message.channelId, request),
           onUserInputRequest: (request) => requestCodexUserInput(reply, replyWithRoleMentions, message.channelId, request),
         });
-        progressReporter.finish();
+        await progressReporter.finish(extractAgentResponseFinalMessage(response));
 
         const reviewSessionId = extractAgentResponseSessionId(response);
 
@@ -2081,7 +2111,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }
         }
       } catch (error) {
-        progressReporter.finish();
+        await progressReporter.finish();
         const messageText = error instanceof Error ? error.message : "Codex review failed";
         await updateQueuedResultReply({
           message,
@@ -2227,9 +2257,12 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               reasoningEffort: agentSettingsController.codexReasoningEffort(message.channelId, channelContext),
               controlKey: forkThread.discordChannelId,
             },
-            onProgress: (event) => {
+            onProgress: async (event) => {
               if (event.type === "thread-started") {
                 trackActiveForkSession(event.sessionId);
+                await input.markDiscordRequestedCodexSession?.(event.sessionId, {
+                  discordChannelId: forkThread?.discordChannelId ?? message.channelId,
+                });
               }
             },
             onApprovalRequest: (request) => requestCodexApproval(replyWithRoleMentions, message.channelId, request),
@@ -2425,8 +2458,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             );
           },
         });
-        progressReporter.finish();
         const responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+        await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
         const responseSessionId = extractAgentResponseSessionId(response);
         const responseFailed = promptResponseFailed(response);
 
@@ -2464,7 +2497,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           pendingRequestCount: channelPendingAgentRequestCount(message.channelId, channelContext),
         });
       } catch (error) {
-        progressReporter.finish();
+        await progressReporter.finish();
         const messageText = error instanceof Error ? error.message : "Claude Code prompt failed";
         const failedResponse = { error: { message: messageText } };
         const resultPayload = formatAgentResultUpdate(claudeMessage, failedResponse);
@@ -2548,9 +2581,15 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             ? routed.sessionId
             : codexSessionIdsByChannel.get(message.channelId) ?? channelContext.codexSessionId ?? null;
 
-        if (streamedSessionId && input.setSessionStreaming) {
-          input.setSessionStreaming(streamedSessionId, true);
-          activeStreamingSessionIds.add(streamedSessionId);
+        if (streamedSessionId) {
+          await input.markDiscordRequestedCodexSession?.(streamedSessionId, {
+            discordChannelId: message.channelId,
+          });
+
+          if (input.setSessionStreaming) {
+            input.setSessionStreaming(streamedSessionId, true);
+            activeStreamingSessionIds.add(streamedSessionId);
+          }
         }
 
         const response = await input.submitCodexPrompt({
@@ -2571,6 +2610,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             if (event.type === "thread-started") {
               streamedSessionId = event.sessionId;
               recentEvents = appendProgressEvent(recentEvents, "생각중...");
+              await input.markDiscordRequestedCodexSession?.(streamedSessionId, {
+                discordChannelId: message.channelId,
+              });
               if (input.setSessionStreaming && !activeStreamingSessionIds.has(streamedSessionId)) {
                 input.setSessionStreaming(streamedSessionId, true);
                 activeStreamingSessionIds.add(streamedSessionId);
@@ -2637,9 +2679,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           onApprovalRequest: (request) => requestCodexApproval(replyWithRoleMentions, message.channelId, request),
           onUserInputRequest: (request) => requestCodexUserInput(reply, replyWithRoleMentions, message.channelId, request),
         });
-        progressReporter.finish();
         const nextSessionId = extractAgentResponseSessionId(response);
         let responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+        await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
 
         if (nextSessionId && input.resolveCodexGoalStatus && !isIntermediateAgentResult(responseForDisplay)) {
           try {
@@ -2731,7 +2773,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }
         }
       } catch (error) {
-        progressReporter.finish();
+        await progressReporter.finish();
         if (
           channelContext.channelMode === "session-linked" &&
           input.syncTranscriptUpdates &&
