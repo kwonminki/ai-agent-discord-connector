@@ -136,7 +136,7 @@ const activeTurnsByControlKey = new Map<string, ActiveCodexAppServerTurn>();
 
 function isActiveTurnMismatch(error: unknown): boolean {
   return error instanceof Error &&
-    /expected active turn id ['"][^'"]+['"] but found ['"][^'"]+['"]/i.test(error.message);
+    /expected active turn id\b.*\bfound\b/i.test(error.message);
 }
 
 function inProgressTurnId(response: unknown, expectedThreadId: string): string | null {
@@ -271,11 +271,14 @@ export async function interruptActiveCodexAppServerTurn(
     };
   }
 
-  try {
-    await activeTurn.request("turn/interrupt", {
+  const interrupt = (turnId: string) =>
+    activeTurn.request("turn/interrupt", {
       threadId: activeTurn.threadId,
-      turnId: activeTurn.turnId,
+      turnId,
     });
+
+  try {
+    await interrupt(activeTurn.turnId);
     return {
       status: "accepted",
       message: "현재 Codex turn에 중단 요청을 전달했습니다.",
@@ -283,6 +286,29 @@ export async function interruptActiveCodexAppServerTurn(
       turnId: activeTurn.turnId,
     };
   } catch (error) {
+    if (isActiveTurnMismatch(error)) {
+      try {
+        const threadResult = await activeTurn.request("thread/read", {
+          threadId: activeTurn.threadId,
+          includeTurns: true,
+        });
+        const refreshedTurnId = inProgressTurnId(threadResult, activeTurn.threadId);
+
+        if (refreshedTurnId && refreshedTurnId !== activeTurn.turnId) {
+          await interrupt(refreshedTurnId);
+          activeTurn.turnId = refreshedTurnId;
+          return {
+            status: "accepted",
+            message: "현재 Codex turn을 다시 확인한 뒤 중단 요청을 전달했습니다.",
+            threadId: activeTurn.threadId,
+            turnId: refreshedTurnId,
+          };
+        }
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
+
     return {
       status: "failed",
       message: error instanceof Error ? error.message : "Codex 중단 요청에 실패했습니다.",
@@ -1685,12 +1711,12 @@ async function runPromptAgainstAppServer(input: {
   function clearActiveTurn(): void {
     const controlKey = input.input.controlKey?.trim();
 
-    if (!controlKey || !activeTurnId) {
+    if (!controlKey) {
       return;
     }
 
     const activeTurn = activeTurnsByControlKey.get(controlKey);
-    if (activeTurn?.turnId === activeTurnId) {
+    if (activeTurn?.request === request) {
       activeTurnsByControlKey.delete(controlKey);
     }
   }

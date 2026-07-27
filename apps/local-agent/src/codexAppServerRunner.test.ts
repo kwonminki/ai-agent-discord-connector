@@ -273,6 +273,116 @@ describe("runCodexAppServerPrompt", () => {
     }
   });
 
+  it("refreshes a stale active turn id before interrupting a goal continuation", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-app-server-stale-interrupt-"));
+    const httpServer = createServer();
+    const wsServer = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
+    const interruptTurnIds: string[] = [];
+
+    try {
+      const appServerUrl = await listenOnLoopback(httpServer);
+
+      wsServer.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const message = JSON.parse(raw.toString()) as {
+            id?: number;
+            method?: string;
+            params?: { turnId?: string };
+          };
+
+          if (message.method === "initialize") {
+            socket.send(JSON.stringify({ id: message.id, result: {} }));
+            return;
+          }
+
+          if (message.method === "thread/start") {
+            socket.send(JSON.stringify({ id: message.id, result: { thread: { id: "interrupt-thread-1" } } }));
+            return;
+          }
+
+          if (message.method === "turn/start") {
+            socket.send(JSON.stringify({
+              id: message.id,
+              result: { turn: { id: "discord-turn-1", status: "inProgress", items: [] } },
+            }));
+            return;
+          }
+
+          if (message.method === "thread/read") {
+            socket.send(JSON.stringify({
+              id: message.id,
+              result: {
+                thread: {
+                  id: "interrupt-thread-1",
+                  turns: [
+                    { id: "discord-turn-1", status: "completed", items: [] },
+                    { id: "goal-continuation-2", status: "inProgress", items: [] },
+                  ],
+                },
+              },
+            }));
+            return;
+          }
+
+          if (message.method === "turn/interrupt") {
+            const turnId = message.params?.turnId ?? "";
+            interruptTurnIds.push(turnId);
+
+            if (turnId === "discord-turn-1") {
+              socket.send(JSON.stringify({
+                id: message.id,
+                error: {
+                  code: -32600,
+                  message: "expected active turn id `discord-turn-1` but found `goal-continuation-2`",
+                },
+              }));
+            } else {
+              socket.send(JSON.stringify({ id: message.id, result: {} }));
+              socket.send(JSON.stringify({
+                method: "turn/completed",
+                params: {
+                  threadId: "interrupt-thread-1",
+                  turn: { id: "goal-continuation-2", status: "interrupted", error: { message: "Interrupted" } },
+                },
+              }));
+            }
+          }
+        });
+      });
+
+      const runPromise = runCodexAppServerPrompt({
+        workspaceRoot,
+        cwd: workspaceRoot,
+        prompt: "장기 목표를 계속 진행해줘",
+        timeoutMs: 5_000,
+        sessionId: null,
+        controlKey: "interrupt-discord-channel",
+        appServerUrl,
+      });
+
+      let interruptResult = await interruptActiveCodexAppServerTurn("interrupt-discord-channel");
+      for (let attempt = 0; attempt < 20 && interruptResult.status === "no-active-turn"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        interruptResult = await interruptActiveCodexAppServerTurn("interrupt-discord-channel");
+      }
+
+      expect(interruptResult).toMatchObject({
+        status: "accepted",
+        threadId: "interrupt-thread-1",
+        turnId: "goal-continuation-2",
+      });
+      expect(interruptTurnIds).toEqual(["discord-turn-1", "goal-continuation-2"]);
+      await expect(runPromise).resolves.toMatchObject({ status: "failed", finalMessage: "Interrupted" });
+      await expect(interruptActiveCodexAppServerTurn("interrupt-discord-channel")).resolves.toMatchObject({
+        status: "no-active-turn",
+      });
+    } finally {
+      wsServer.close();
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("runs a prompt through the Codex app-server protocol", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-app-server-runner-"));
     const httpServer = createServer();
