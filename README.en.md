@@ -10,6 +10,15 @@
 
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
+## v1.5 Release
+
+> ### NEW · Agent-aware context control
+> **Discord `/compact` now detects the agent linked to the current thread and uses the correct compaction path.**
+>
+> Claude Code threads invoke the persistent session's native `/compact`, while Codex threads request a condensed summary of the current work context. Optional instructions are preserved, and when an agent is already busy the command waits safely for the next turn instead of steering the active one. Command descriptions and guidance are available consistently in Korean, English, Chinese, and Japanese.
+>
+> **Long-running Codex work now reports its state more accurately as well.** A turn whose goal is still running is announced as an Operator-mentioned **intermediate answer**; only the final turn that actually completes the goal is announced as **Task completed**. If automatic continuation changes the active turn ID, Discord steering finds the latest turn and retries once safely.
+
 ## v1.4 Release
 
 > ### v1.4.2 patch · Reliable steering during long-running Codex work

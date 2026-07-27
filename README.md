@@ -10,6 +10,15 @@
 
 Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI agent를 Discord 스레드로 사용하고, 서로 대화시킬 수 있는 개인용 브리지**입니다.
 
+## v1.5 Release
+
+> ### NEW · Agent-aware 컨텍스트 제어
+> **Discord의 `/compact`가 현재 스레드의 agent를 구분해 올바른 방식으로 컨텍스트를 정리합니다.**
+>
+> Claude Code 스레드에서는 상주 세션의 네이티브 `/compact`를 실행하고, Codex 스레드에서는 현재 작업 맥락을 압축 요약합니다. 추가 지시도 함께 전달할 수 있으며, agent가 이미 작업 중이면 현재 turn을 방해하지 않고 다음 요청으로 안전하게 대기합니다. 명령 설명과 안내 문구는 한국어, 영어, 중국어, 일본어에서 동일하게 제공됩니다.
+>
+> **장기 Codex 작업의 상태도 더 정확해졌습니다.** Goal이 아직 진행 중인 turn은 Operator 멘션과 함께 **중간 답변**으로 표시하고, 실제 goal이 완료된 마지막 turn만 **작업 완료**로 알립니다. 자동 연속 turn으로 활성 turn ID가 바뀌어도 Discord steering이 최신 turn을 찾아 한 번 안전하게 재시도합니다.
+
 ## v1.4 Release
 
 > ### v1.4.2 패치 · 장기 Codex 작업에서도 안정적인 steering
