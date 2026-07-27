@@ -132,11 +132,11 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
   },
   {
     name: "compact",
-    description: "현재 작업 맥락을 압축 요약하도록 Codex에 요청합니다.",
+    description: "현재 Codex 또는 Claude Code 세션의 컨텍스트를 압축합니다.",
     options: [
       stringOption({
         name: "prompt",
-        description: "compact에 함께 전달할 요청",
+        description: "컨텍스트 압축에 함께 전달할 추가 지시",
       }),
     ],
   },
@@ -565,6 +565,13 @@ function compactPrompt(prompt: string | null, locale: ConnectorLocale): string {
   return localizeConnectorText(generatedPrompt, locale);
 }
 
+function agentCompactCommand(prompt: string | null): string {
+  const normalizedPrompt = prompt?.trim() ?? "";
+  return normalizedPrompt.length > 0
+    ? `__cdc_agent_compact ${normalizedPrompt}`
+    : "__cdc_agent_compact";
+}
+
 function skillPrompt(skillName: string, prompt: string, locale: ConnectorLocale): string {
   return localizeConnectorText(
     `codex ${skillName} skill을 적용해서 다음 요청을 처리해줘: ${prompt}`,
@@ -646,7 +653,7 @@ export function routeDiscordApplicationCommand(
       return routeCodexCommandShortcut(commandName, interaction.options.getString("prompt"), locale);
     }
     case "compact":
-      return compactPrompt(interaction.options.getString("prompt"), locale);
+      return agentCompactCommand(interaction.options.getString("prompt"));
     case "skill": {
       const skillName = interaction.options.getString("name", true)?.trim();
       const prompt = interaction.options.getString("prompt", true)?.trim();

@@ -1342,6 +1342,80 @@ describe("createDiscordMessageHandler", () => {
     await first;
   });
 
+  it("queues a Claude /compact interaction behind an active turn instead of steering it", async () => {
+    let firstPromptWaiting = false;
+    let finishFirstPrompt: (value: unknown) => void = () => {
+      throw new Error("first Claude prompt completion was not initialized");
+    };
+    const submitClaudePrompt = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          finishFirstPrompt = resolve;
+          firstPromptWaiting = true;
+        }),
+      )
+      .mockResolvedValueOnce({
+        jobId: "claude-job-2",
+        result: {
+          status: "completed",
+          finalMessage: "Compacted conversation.",
+          sessionId: "claude-session-1",
+        },
+      });
+    const controlCodexTurn = vi.fn();
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...claudeChannelContext,
+        claudeSessionId: "claude-session-1",
+        discordDeliveryMode: "thread",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt: vi.fn(),
+      submitClaudePrompt,
+      controlCodexTurn,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    const userMessage = (content: string) => ({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "claude-channel-1",
+      content,
+      roleIds: ["role-operator"],
+      reply: async () => ({ edit: async () => undefined }),
+    });
+
+    const first = handleMessage(userMessage("첫 번째 긴 Claude 작업"));
+    await vi.waitFor(() => expect(firstPromptWaiting).toBe(true));
+    const compact = handleMessage(userMessage("__cdc_agent_compact 중요한 API 결정은 유지해줘"));
+
+    expect(controlCodexTurn).not.toHaveBeenCalled();
+    expect(submitClaudePrompt).toHaveBeenCalledTimes(1);
+
+    finishFirstPrompt({
+      jobId: "claude-job-1",
+      result: {
+        status: "completed",
+        finalMessage: "첫 번째 작업을 마쳤습니다.",
+        sessionId: "claude-session-1",
+      },
+    });
+    await first;
+    await compact;
+
+    expect(submitClaudePrompt).toHaveBeenCalledTimes(2);
+    expect(submitClaudePrompt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          prompt: "/compact 중요한 API 결정은 유지해줘",
+          sessionId: "claude-session-1",
+        }),
+      }),
+    );
+  });
+
   it("keeps a Claude follow-up as the next queued turn when the active stdin is already closing", async () => {
     const completions: Array<(value: unknown) => void> = [];
     const submitClaudePrompt = vi.fn().mockImplementation(

@@ -217,6 +217,47 @@ describe("routeDiscordMessage", () => {
     });
   });
 
+  it("routes native /compact interactions to the current channel agent", () => {
+    const base = {
+      userRoleIds: ["role-operator"],
+      allowedRoleIds: ["role-operator"],
+    };
+
+    expect(routeDiscordMessage({
+      ...base,
+      channelMode: "session-linked",
+      content: "__cdc_agent_compact",
+    })).toEqual({
+      type: "codex-chat",
+      content: "지금까지의 작업 맥락을 압축 요약해줘.",
+    });
+    expect(routeDiscordMessage({
+      ...base,
+      channelMode: "claude-code",
+      content: "__cdc_agent_compact",
+    })).toEqual({
+      type: "claude-chat",
+      content: "/compact",
+    });
+    expect(routeDiscordMessage({
+      ...base,
+      channelMode: "claude-code",
+      content: "__cdc_agent_compact API 호환성은 유지해줘",
+    })).toEqual({
+      type: "claude-chat",
+      content: "/compact API 호환성은 유지해줘",
+    });
+    expect(routeDiscordMessage({
+      ...base,
+      channelMode: "shell-admin",
+      content: "__cdc_agent_compact",
+    })).toEqual({
+      type: "blocked-command",
+      reason: "이 명령은 session thread 전용입니다.",
+      guidance: "압축할 Codex 또는 Claude Code session thread에서 /compact를 실행하세요.",
+    });
+  });
+
   it("routes component-generated shell commands in session-linked channels", () => {
     expect(
       routeDiscordMessage({

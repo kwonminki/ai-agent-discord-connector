@@ -1025,7 +1025,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
   ): Promise<boolean> {
     if (
       !queue.activeMessage ||
-      !input.controlCodexTurn
+      !input.controlCodexTurn ||
+      message.content.trim().startsWith("__cdc_agent_compact")
     ) {
       return false;
     }

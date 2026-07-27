@@ -623,7 +623,7 @@ describe("attachDiscordInteractionHandler", () => {
         authorBot: false,
         userId: "discord-user-1",
         channelId: "discord-channel-1",
-        content: "codex 지금까지의 작업 맥락을 압축 요약해줘. 지금까지 맥락 정리",
+        content: "__cdc_agent_compact 지금까지 맥락 정리",
         roleIds: ["role-operator"],
       }),
     );

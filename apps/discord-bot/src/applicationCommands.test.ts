@@ -106,20 +106,27 @@ describe("Discord application commands", () => {
   it("registers English slash command descriptions without changing command names", () => {
     const commands = discordApplicationCommands("en");
     const codex = commands.find((command) => command.name === "codex");
+    const compact = commands.find((command) => command.name === "compact");
 
     expect(codex?.description).toBe("Send a natural-language request to Codex.");
     expect(codex?.options?.[0]?.name).toBe("prompt");
     expect(codex?.options?.[0]?.description).toBe("Request to send to Codex");
+    expect(compact?.description).toBe("Compact the context of the current Codex or Claude Code session.");
+    expect(compact?.options?.[0]?.description).toBe("Additional instructions for context compaction");
   });
 
   it("registers Chinese and Japanese slash command descriptions", () => {
     const chinese = discordApplicationCommands("zh").find((command) => command.name === "codex");
     const japanese = discordApplicationCommands("ja").find((command) => command.name === "codex");
+    const chineseCompact = discordApplicationCommands("zh").find((command) => command.name === "compact");
+    const japaneseCompact = discordApplicationCommands("ja").find((command) => command.name === "compact");
 
     expect(chinese?.description).toBe("向 Codex 发送自然语言请求。");
     expect(chinese?.options?.[0]?.description).toBe("发送给 Codex 的请求");
     expect(japanese?.description).toBe("Codex に自然言語で依頼します。");
     expect(japanese?.options?.[0]?.description).toBe("Codex に送るリクエスト");
+    expect(chineseCompact?.description).toBe("压缩当前 Codex 或 Claude Code 会话的上下文。");
+    expect(japaneseCompact?.description).toBe("現在の Codex または Claude Code セッションのコンテキストを圧縮します。");
   });
 
   it("uses English for generated agent prompts in an English installation", () => {
@@ -130,23 +137,23 @@ describe("Discord application commands", () => {
     expect(routeDiscordApplicationCommand({
       commandName: "compact",
       options: options({ prompt: "Keep API compatibility." }),
-    }, "en")).toBe("codex Compact and summarize the work context so far. Keep API compatibility.");
+    }, "en")).toBe("__cdc_agent_compact Keep API compatibility.");
   });
 
-  it("routes /compact as an exec-compatible Codex summary prompt", () => {
+  it("preserves /compact until the channel-aware router selects the agent", () => {
     expect(
       routeDiscordApplicationCommand({
         commandName: "compact",
         options: options({ prompt: "이번 작업 맥락 정리" }),
       }),
-    ).toBe("codex 지금까지의 작업 맥락을 압축 요약해줘. 이번 작업 맥락 정리");
+    ).toBe("__cdc_agent_compact 이번 작업 맥락 정리");
 
     expect(
       routeDiscordApplicationCommand({
         commandName: "compact",
         options: options({}),
       }),
-    ).toBe("codex 지금까지의 작업 맥락을 압축 요약해줘.");
+    ).toBe("__cdc_agent_compact");
   });
 
   it("routes /skill as an exec-compatible skill request prompt", () => {

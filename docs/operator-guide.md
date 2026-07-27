@@ -53,7 +53,7 @@ Session-linked commands:
 - `/review prompt:<관점>` runs `codex exec review` for the current repository changes.
 - `/fix-tests` asks Codex to run tests, diagnose failures, fix them, and verify again.
 - `/summarize target:<대상>` asks Codex to summarize a channel or project context.
-- `/compact prompt:<요청>` asks Codex to produce a compact working-context summary; it is not an interactive slash passthrough.
+- `/compact prompt:<요청>` is agent-aware: Claude Code receives its native `/compact [instructions]` command in the persistent session, while Codex receives the existing compact working-context summary request. If an agent turn is already active, the command waits as the next turn instead of steering the active work.
 - `/skill name:<skill> prompt:<요청>` sends an exec-compatible prompt asking Codex to apply the named skill perspective.
 - `/model model:<모델>` stores a persistent per-thread model override for Codex or Claude Code. Use `default` to inherit the owning main channel again.
 - `/effort level:low/medium/high/xhigh/max/default` stores a persistent per-thread reasoning override. Codex supports through `xhigh`; Claude Code supports through `max`.

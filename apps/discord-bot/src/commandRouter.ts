@@ -160,6 +160,21 @@ function parseCodexShortcut(
   return null;
 }
 
+function parseAgentCompactCommand(content: string): { prompt: string | null } | null {
+  const prefix = "__cdc_agent_compact";
+
+  if (content === prefix) {
+    return { prompt: null };
+  }
+
+  if (!content.startsWith(`${prefix} `)) {
+    return null;
+  }
+
+  const prompt = content.slice(prefix.length + 1).trim();
+  return { prompt: prompt || null };
+}
+
 function parseChatResume(content: string): { sessionId: string | null } | null {
   const match = content.trim().match(/^chat\s+resume(?:\s+([A-Za-z0-9-]{8,64}))?$/i);
 
@@ -1084,6 +1099,38 @@ export function routeDiscordMessage(input: RouteDiscordMessageInput): RoutedDisc
     }
 
     return queueControl;
+  }
+
+  const agentCompact = parseAgentCompactCommand(trimmedContent);
+
+  if (agentCompact) {
+    const denied = authorizationDenied(input);
+
+    if (denied) {
+      return denied;
+    }
+
+    if (input.channelMode === "shell-admin") {
+      return blockedCommand(
+        "이 명령은 session thread 전용입니다.",
+        "압축할 Codex 또는 Claude Code session thread에서 /compact를 실행하세요.",
+      );
+    }
+
+    if (input.channelMode === "claude-code") {
+      return {
+        type: "claude-chat",
+        content: agentCompact.prompt ? `/compact ${agentCompact.prompt}` : "/compact",
+      };
+    }
+
+    const generatedPrompt = agentCompact.prompt
+      ? `지금까지의 작업 맥락을 압축 요약해줘. ${agentCompact.prompt}`
+      : "지금까지의 작업 맥락을 압축 요약해줘.";
+    return {
+      type: "codex-chat",
+      content: localizeConnectorText(generatedPrompt, input.locale ?? "ko"),
+    };
   }
 
   const codexOpenSession = parseCodexOpenSessionCommand(trimmedContent);
