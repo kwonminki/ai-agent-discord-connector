@@ -1349,6 +1349,27 @@ function stringParam(params: Record<string, unknown>, key: string): string | nul
   return null;
 }
 
+function notificationThreadId(
+  method: string,
+  params: Record<string, unknown>,
+): string | null {
+  const directThreadId = stringParam(params, "threadId");
+
+  if (directThreadId) {
+    return directThreadId;
+  }
+
+  if (method === "thread/started") {
+    return stringParam(objectParam(params.thread), "id");
+  }
+
+  if (method.startsWith("thread/goal/")) {
+    return stringParam(objectParam(params.goal), "threadId");
+  }
+
+  return null;
+}
+
 function jsonDetail(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2) ?? "";
@@ -1844,6 +1865,20 @@ async function runPromptAgainstAppServer(input: {
     const params = typeof message.params === "object" && message.params !== null
       ? (message.params as Record<string, unknown>)
       : {};
+    const notifiedThreadId = notificationThreadId(method, params);
+
+    // A persistent app-server multiplexes every Discord session. Its
+    // notifications can be observed by more than one WebSocket client, so
+    // never let another client's thread mutate or complete this prompt.
+    // `thread/started` is intentionally redundant: the matching RPC response
+    // below is the authoritative source for the opened/resumed thread ID.
+    if (method === "thread/started") {
+      return;
+    }
+
+    if (!sessionId || !notifiedThreadId || notifiedThreadId !== sessionId) {
+      return;
+    }
 
     if (method === "thread/tokenUsage/updated") {
       const usage = threadTokenUsageFromNotification(params);
@@ -1878,18 +1913,6 @@ async function runPromptAgainstAppServer(input: {
 
     if (method === "thread/goal/cleared") {
       goalStatus = null;
-      return;
-    }
-
-    if (method === "thread/started") {
-      const thread = typeof params.thread === "object" && params.thread !== null
-        ? (params.thread as { id?: unknown })
-        : null;
-      const threadId = typeof thread?.id === "string" ? thread.id : null;
-
-      if (threadId) {
-        await emitThreadStarted(threadId);
-      }
       return;
     }
 
@@ -1986,6 +2009,12 @@ async function runPromptAgainstAppServer(input: {
 
     const method = typeof message.method === "string" ? message.method : "";
     const params = objectParam(message.params);
+    const requestThreadId = stringParam(params, "threadId");
+
+    if (requestThreadId && requestThreadId !== sessionId) {
+      return;
+    }
+
     const approvalRequest = approvalRequestFromServerRequest(method, params, sessionId);
 
     if (approvalRequest) {

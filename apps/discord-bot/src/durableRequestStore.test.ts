@@ -8,7 +8,9 @@ import { createDurableDiscordRequestStore } from "./durableRequestStore.js";
 describe("durable Discord request store", () => {
   it("persists requests in creation order and removes them only after delivery", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "discord-durable-"));
-    const store = createDurableDiscordRequestStore(root);
+    const store = createDurableDiscordRequestStore(root, {
+      now: () => Date.parse("2026-07-21T00:00:10.000Z"),
+    });
 
     try {
       await store.enqueue({

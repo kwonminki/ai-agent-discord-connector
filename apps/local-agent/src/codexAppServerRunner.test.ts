@@ -659,6 +659,160 @@ describe("runCodexAppServerPrompt", () => {
     }
   });
 
+  it("isolates concurrent sessions when a shared app-server broadcasts notifications", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-app-server-isolation-"));
+    const httpServer = createServer();
+    const wsServer = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
+    const connections: Array<{
+      socket: import("ws").WebSocket;
+      threadId: string | null;
+      turnId: string | null;
+    }> = [];
+    let notificationsSent = false;
+
+    try {
+      const appServerUrl = await listenOnLoopback(httpServer);
+
+      wsServer.on("connection", (socket) => {
+        const connection = {
+          socket,
+          threadId: null as string | null,
+          turnId: null as string | null,
+        };
+        connections.push(connection);
+
+        socket.on("message", (raw) => {
+          const message = JSON.parse(raw.toString()) as {
+            id?: number;
+            method?: string;
+          };
+
+          if (message.method === "initialize") {
+            socket.send(JSON.stringify({ id: message.id, result: {} }));
+            return;
+          }
+
+          if (message.method === "thread/start") {
+            connection.threadId = `isolated-thread-${connections.indexOf(connection) + 1}`;
+            socket.send(JSON.stringify({
+              id: message.id,
+              result: { thread: { id: connection.threadId } },
+            }));
+            return;
+          }
+
+          if (message.method !== "turn/start") {
+            return;
+          }
+
+          connection.turnId = `isolated-turn-${connections.indexOf(connection) + 1}`;
+          socket.send(JSON.stringify({
+            id: message.id,
+            result: {
+              turn: {
+                id: connection.turnId,
+                status: "inProgress",
+                items: [],
+              },
+            },
+          }));
+
+          if (notificationsSent || connections.some((candidate) => !candidate.turnId)) {
+            return;
+          }
+          notificationsSent = true;
+
+          for (const recipient of connections) {
+            for (const source of connections) {
+              recipient.socket.send(JSON.stringify({
+                method: "thread/started",
+                params: { thread: { id: source.threadId } },
+              }));
+            }
+
+            for (const source of connections) {
+              const suffix = source.threadId?.split("-").at(-1);
+              recipient.socket.send(JSON.stringify({
+                method: "item/completed",
+                params: {
+                  threadId: source.threadId,
+                  turnId: source.turnId,
+                  item: {
+                    type: "agentMessage",
+                    id: `isolated-message-${suffix}`,
+                    text: `isolated answer ${suffix}`,
+                    phase: "final_answer",
+                  },
+                },
+              }));
+              recipient.socket.send(JSON.stringify({
+                method: "turn/completed",
+                params: {
+                  threadId: source.threadId,
+                  turn: {
+                    id: source.turnId,
+                    status: "completed",
+                    error: null,
+                  },
+                },
+              }));
+            }
+          }
+        });
+      });
+
+      const firstEvents: unknown[] = [];
+      const secondEvents: unknown[] = [];
+      const results = await Promise.all([
+        runCodexAppServerPrompt({
+          workspaceRoot,
+          cwd: workspaceRoot,
+          prompt: "첫 번째 동시 요청",
+          timeoutMs: 5_000,
+          appServerUrl,
+          onProgress: (event) => {
+            firstEvents.push(event);
+          },
+        }),
+        runCodexAppServerPrompt({
+          workspaceRoot,
+          cwd: workspaceRoot,
+          prompt: "두 번째 동시 요청",
+          timeoutMs: 5_000,
+          appServerUrl,
+          onProgress: (event) => {
+            secondEvents.push(event);
+          },
+        }),
+      ]);
+
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: "completed",
+          sessionId: "isolated-thread-1",
+          finalMessage: "isolated answer 1",
+        }),
+        expect.objectContaining({
+          status: "completed",
+          sessionId: "isolated-thread-2",
+          finalMessage: "isolated answer 2",
+        }),
+      ]);
+      expect(firstEvents).toEqual([
+        { type: "thread-started", sessionId: "isolated-thread-1" },
+        { type: "agent-message", text: "isolated answer 1" },
+      ]);
+      expect(secondEvents).toEqual([
+        { type: "thread-started", sessionId: "isolated-thread-2" },
+        { type: "agent-message", text: "isolated answer 2" },
+      ]);
+    } finally {
+      wsServer.close();
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("forks an existing app-server thread before starting a turn", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-app-server-runner-"));
     const httpServer = createServer();
