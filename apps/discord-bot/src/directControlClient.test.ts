@@ -1,16 +1,13 @@
-import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { executeSqliteScript } from "../../../packages/codex-adapter/src/sqlite.js";
 import { createDirectControlClient, resolveDirectCodexRunner } from "./directControlClient.js";
 import { createDirectSyncStateStore } from "./directState.js";
 
-const execFileAsync = promisify(execFile);
-
 async function createCodexStateDatabase(codexHome: string, sql: string) {
-  await execFileAsync("sqlite3", [path.join(codexHome, "state_1.sqlite"), sql]);
+  await executeSqliteScript(path.join(codexHome, "state_1.sqlite"), sql);
 }
 
 describe("createDirectControlClient", () => {
@@ -64,7 +61,7 @@ describe("createDirectControlClient", () => {
       ).resolves.toMatchObject({
         result: {
           status: "completed",
-          stdout: "hello direct\n",
+          stdout: expect.stringMatching(/^hello direct\r?\n$/),
         },
       });
     } finally {

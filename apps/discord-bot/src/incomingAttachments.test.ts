@@ -39,7 +39,7 @@ describe("incoming Discord attachments", () => {
 
       const prompt = appendDiscordAttachmentsToPrompt("이 영상을 확인해줘.", files);
       expect(prompt).toContain("이 영상을 확인해줘.");
-      expect(prompt).toContain(files[0]!.localPath);
+      expect(prompt).toContain(JSON.stringify(files[0]!.localPath));
       expect(prompt).toContain('"contentType": "video/mp4"');
       expect(prompt).not.toContain("cdn.discordapp.com");
     } finally {

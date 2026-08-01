@@ -1,10 +1,8 @@
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { querySqliteText } from "./sqlite.js";
 
-const execFileAsync = promisify(execFile);
 const SQLITE_SEPARATOR = "\u001f";
 
 export interface CodexSessionIndexEntry {
@@ -696,16 +694,12 @@ async function readCodexThreadStates(codexHome: string): Promise<Map<string, Cod
   }
 
   try {
-    const { stdout } = await execFileAsync(
-      "sqlite3",
+    const stdout = await querySqliteText(
+      databasePath,
       [
-        databasePath,
-        [
-          `select 'thread' || char(31) || id || char(31) || archived || char(31) || source from threads;`,
-          `select 'edge' || char(31) || child_thread_id from thread_spawn_edges;`,
-        ].join("\n"),
-      ],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+        `select 'thread' || char(31) || id || char(31) || archived || char(31) || source from threads;`,
+        `select 'edge' || char(31) || child_thread_id from thread_spawn_edges;`,
+      ].join("\n"),
     );
 
     const states = parseCodexThreadStateRows(stdout);
@@ -753,13 +747,9 @@ async function readCodexGoalStatuses(codexHome: string): Promise<Map<string, Cod
   }
 
   try {
-    const { stdout } = await execFileAsync(
-      "sqlite3",
-      [
-        databasePath,
-        `select thread_id || char(31) || status from thread_goals;`,
-      ],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+    const stdout = await querySqliteText(
+      databasePath,
+      `select thread_id || char(31) || status from thread_goals;`,
     );
     const statuses = parseCodexGoalStatusRows(stdout);
 

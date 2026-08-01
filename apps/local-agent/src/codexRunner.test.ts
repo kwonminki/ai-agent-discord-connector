@@ -1,7 +1,8 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { writeNodeTestExecutable } from "../test/testExecutable.js";
 import { runCodexPrompt } from "./codexRunner.js";
 
 describe("runCodexPrompt", () => {
@@ -37,7 +38,7 @@ describe("runCodexPrompt", () => {
     const previousCommand = process.env.CODEX_DISCORD_CODEX_COMMAND;
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -49,7 +50,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
       process.env.CODEX_DISCORD_CODEX_COMMAND = fakeCodex;
 
       await expect(
@@ -81,7 +81,7 @@ describe("runCodexPrompt", () => {
     const argsFile = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -94,7 +94,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await expect(
         runCodexPrompt({
@@ -134,7 +133,7 @@ describe("runCodexPrompt", () => {
     const argsFile = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -147,7 +146,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -170,7 +168,7 @@ describe("runCodexPrompt", () => {
     const argsFile = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -182,7 +180,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -211,7 +208,7 @@ describe("runCodexPrompt", () => {
     try {
       process.env.CODEX_DISCORD_CODEX_SANDBOX = "danger-full-access";
       process.env.CODEX_DISCORD_CODEX_APPROVAL_POLICY = "never";
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -223,7 +220,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -263,7 +259,7 @@ describe("runCodexPrompt", () => {
     const argsFile = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -275,7 +271,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -312,7 +307,7 @@ describe("runCodexPrompt", () => {
 
     try {
       await mkdir(projectRoot);
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -325,7 +320,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -363,7 +357,7 @@ describe("runCodexPrompt", () => {
     const fakeCodex = path.join(tempRoot, "codex");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -372,7 +366,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await expect(
         runCodexPrompt({
@@ -400,7 +393,7 @@ describe("runCodexPrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -413,7 +406,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await expect(
         runCodexPrompt({
@@ -447,7 +439,7 @@ describe("runCodexPrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -459,7 +451,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -484,7 +475,7 @@ describe("runCodexPrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -496,7 +487,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -521,7 +511,7 @@ describe("runCodexPrompt", () => {
     const fakeCodex = path.join(tempRoot, "codex");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -537,7 +527,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await expect(
         runCodexPrompt({
@@ -564,7 +553,7 @@ describe("runCodexPrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -578,7 +567,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -631,7 +619,7 @@ describe("runCodexPrompt", () => {
     ].join("\n");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -644,7 +632,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,
@@ -682,7 +669,7 @@ describe("runCodexPrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeCodex,
         [
           "#!/usr/bin/env node",
@@ -697,7 +684,6 @@ describe("runCodexPrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeCodex, 0o755);
 
       await runCodexPrompt({
         workspaceRoot: tempRoot,

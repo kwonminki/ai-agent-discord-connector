@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { buildCommandInvocation } from "./windowsCommand.js";
 
 export interface RunCodexPromptInput {
   workspaceRoot: string;
@@ -791,10 +792,12 @@ export async function runCodexPrompt(input: RunCodexPromptInput): Promise<RunCod
   }
 
   try {
-    const child = spawn(codexCommand, args, {
+    const invocation = buildCommandInvocation(codexCommand, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd,
       env: {
         ...process.env,
+        ...invocation.env,
         ...(input.codexHome ? { CODEX_HOME: input.codexHome } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],

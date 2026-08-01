@@ -136,11 +136,12 @@ describe("cwd picker", () => {
     expect(isCwdPickerComponent(CWD_PICKER_IDS.confirm)).toBe(true);
     expect(isCwdPickerComponent("cdc:fs:up")).toBe(false);
 
-    expect(cwdPickerParentPath("/tmp/a/b")).toBe("/tmp/a");
-    expect(cwdPickerChildPath("/tmp/a", "b")).toBe("/tmp/a/b");
+    const root = path.resolve("/tmp/a");
+    expect(cwdPickerParentPath(path.join(root, "b"))).toBe(root);
+    expect(cwdPickerChildPath(root, "b")).toBe(path.join(root, "b"));
     // Traversal tokens in a select value must not escape the current folder.
-    expect(cwdPickerChildPath("/tmp/a", "..")).toBe("/tmp/a");
-    expect(cwdPickerChildPath("/tmp/a", "x/../..")).toBe("/tmp/a");
+    expect(cwdPickerChildPath(root, "..")).toBe(root);
+    expect(cwdPickerChildPath(root, "x/../..")).toBe(root);
 
     expect(parseCwdPickerState("아무 관련 없는 메시지")).toBeNull();
   });

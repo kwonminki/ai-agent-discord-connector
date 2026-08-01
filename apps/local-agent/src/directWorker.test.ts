@@ -1,7 +1,8 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { writeNodeTestExecutable } from "../test/testExecutable.js";
 
 import { createDirectWorkerClient } from "../../discord-bot/src/directWorkerClient.js";
 import { startDirectWorker } from "./directWorker.js";
@@ -23,7 +24,7 @@ describe("direct worker", () => {
         payload: {
           workspaceRoot: root,
           cwd: root,
-          command: "printf woke",
+          command: process.platform === "win32" ? "[Console]::Out.Write('woke')" : "printf woke",
           timeoutMs: 5_000,
           confirmedDangerous: true,
         },
@@ -51,7 +52,9 @@ describe("direct worker", () => {
         payload: {
           workspaceRoot: root,
           cwd: root,
-          command: `mkdir -p '${workspace}' && sleep 0.15 && printf survived`,
+          command: process.platform === "win32"
+            ? `New-Item -ItemType Directory -Force -LiteralPath '${workspace}' | Out-Null; Start-Sleep -Milliseconds 150; [Console]::Out.Write('survived')`
+            : `mkdir -p '${workspace}' && sleep 0.15 && printf survived`,
           timeoutMs: 5_000,
           confirmedDangerous: true,
         },
@@ -90,22 +93,33 @@ describe("direct worker", () => {
         jobId: "ordered-1",
         type: "run-command",
         queueKey: "thread-1",
-        payload: { ...basePayload, command: `sleep 0.1; printf 'first\\n' >> '${outputPath}'` },
+        payload: {
+          ...basePayload,
+          command: process.platform === "win32"
+            ? `Start-Sleep -Milliseconds 100; [IO.File]::AppendAllText('${outputPath}', 'first' + [Environment]::NewLine)`
+            : `sleep 0.1; printf 'first\\n' >> '${outputPath}'`,
+        },
       });
       await new Promise((resolve) => setTimeout(resolve, 5));
       const second = secondClient.submit({
         jobId: "ordered-2",
         type: "run-command",
         queueKey: "thread-1",
-        payload: { ...basePayload, command: `printf 'second\\n' >> '${outputPath}'` },
+        payload: {
+          ...basePayload,
+          command: process.platform === "win32"
+            ? `[IO.File]::AppendAllText('${outputPath}', 'second' + [Environment]::NewLine)`
+            : `printf 'second\\n' >> '${outputPath}'`,
+        },
       });
       const startedAt = Date.now();
-      const worker = await startDirectWorker({ store, pollIntervalMs: 1_500, maxConcurrency: 4 });
+      const worker = await startDirectWorker({ store, pollIntervalMs: 5_000, maxConcurrency: 4 });
 
       try {
         await Promise.all([first, second]);
-        expect(Date.now() - startedAt).toBeLessThan(1_000);
-        await expect(readFile(outputPath, "utf8")).resolves.toBe("first\nsecond\n");
+        expect(Date.now() - startedAt).toBeLessThan(process.platform === "win32" ? 3_000 : 1_000);
+        const output = await readFile(outputPath, "utf8");
+        expect(output.replace(/\r\n/g, "\n")).toBe("first\nsecond\n");
       } finally {
         await worker.stop();
       }
@@ -252,13 +266,13 @@ describe("direct worker", () => {
         payload: {
           workspaceRoot: root,
           cwd: root,
-          command: "sleep 0.5",
+          command: process.platform === "win32" ? "[Threading.Thread]::Sleep(500)" : "sleep 0.5",
           timeoutMs: 5_000,
           confirmedDangerous: true,
         },
       });
 
-      for (let attempt = 0; attempt < 50; attempt += 1) {
+      for (let attempt = 0; attempt < (process.platform === "win32" ? 300 : 50); attempt += 1) {
         if ((await store.readState("draining-job"))?.status === "running") {
           break;
         }
@@ -276,7 +290,7 @@ describe("direct worker", () => {
         control,
         new Promise((_, reject) => setTimeout(
           () => reject(new Error("Control was not handled until the active job finished.")),
-          250,
+          process.platform === "win32" ? 1_500 : 250,
         )),
       ])).resolves.toEqual({
         status: "accepted",
@@ -288,14 +302,14 @@ describe("direct worker", () => {
       await worker.stop();
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("steers an active Claude Code process through the durable control mailbox", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-claude-steer-"));
     const fakeClaude = path.join(root, "claude");
     const inputsPath = path.join(root, "inputs.json");
     const store = createDirectWorkerStore(path.join(root, "worker"));
-    await writeFile(fakeClaude, [
+    await writeNodeTestExecutable(fakeClaude, [
       "#!/usr/bin/env node",
       "const fs = require('node:fs');",
       "const readline = require('node:readline');",
@@ -314,7 +328,6 @@ describe("direct worker", () => {
       "});",
       "input.on('close', () => process.exit(0));",
     ].join("\n"), "utf8");
-    await chmod(fakeClaude, 0o755);
     const worker = await startDirectWorker({ store, pollIntervalMs: 10, maxConcurrency: 1 });
     const client = createDirectWorkerClient({ store, pollIntervalMs: 10 });
 
@@ -372,12 +385,11 @@ describe("direct worker", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-claude-interrupt-"));
     const fakeClaude = path.join(root, "claude");
     const store = createDirectWorkerStore(path.join(root, "worker"));
-    await writeFile(fakeClaude, [
+    await writeNodeTestExecutable(fakeClaude, [
       "#!/usr/bin/env node",
       "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-interrupt-1' }));",
       "setInterval(() => {}, 1000);",
     ].join("\n"), "utf8");
-    await chmod(fakeClaude, 0o755);
     const worker = await startDirectWorker({ store, pollIntervalMs: 10, maxConcurrency: 1 });
     const client = createDirectWorkerClient({ store, pollIntervalMs: 10 });
 

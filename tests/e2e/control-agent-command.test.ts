@@ -90,7 +90,7 @@ describe("control api to local agent command flow", () => {
     await expect(response.json()).resolves.toMatchObject({
       result: {
         status: "completed",
-        stdout: "hello from the real local agent\n",
+        stdout: expect.stringMatching(/^hello from the real local agent\r?\n$/),
         stderr: "",
         exitCode: 0,
       },

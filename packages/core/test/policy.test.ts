@@ -332,8 +332,9 @@ describe("command policy", () => {
   });
 
   it("updates cwd only when the next path remains inside workspace root", () => {
-    expect(updateCwd("/repo", "/repo/src", "..")).toBe("/repo");
-    expect(() => updateCwd("/repo", "/repo", "..")).toThrow("Path escapes workspace root");
+    const workspaceRoot = path.resolve("/repo");
+    expect(updateCwd(workspaceRoot, path.join(workspaceRoot, "src"), "..")).toBe(workspaceRoot);
+    expect(() => updateCwd(workspaceRoot, workspaceRoot, "..")).toThrow("Path escapes workspace root");
   });
 
   it("blocks symlink escapes from the workspace root", () => {
@@ -342,7 +343,7 @@ describe("command policy", () => {
     const symlinkPath = path.join(workspaceRoot, "outside-link");
 
     try {
-      fs.symlinkSync(outsideRoot, symlinkPath);
+      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
       expect(() => updateCwd(workspaceRoot, workspaceRoot, "outside-link")).toThrow(
         "Path escapes workspace root",
@@ -359,7 +360,7 @@ describe("command policy", () => {
     const symlinkPath = path.join(workspaceRoot, "outside-link");
 
     try {
-      fs.symlinkSync(outsideRoot, symlinkPath);
+      fs.symlinkSync(outsideRoot, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
       expect(() =>
         updateCwd(workspaceRoot, workspaceRoot, "outside-link/nonexistent-child"),

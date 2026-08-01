@@ -1,13 +1,11 @@
 import path from "node:path";
 import os from "node:os";
-import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
-import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { executeSqliteScript } from "../src/sqlite.js";
 import { discoverCodexSessions, parseSessionIndexLine, parseSessionMetaLine } from "../src/parser.js";
 
 const fixturesRoot = path.resolve("packages/codex-adapter/test/fixtures");
-const execFileAsync = promisify(execFile);
 
 async function writeSessionIndex(codexHome: string, sessions: Array<{ id: string; name: string; updatedAt: string }>) {
   await fs.writeFile(
@@ -26,11 +24,11 @@ async function writeSessionIndex(codexHome: string, sessions: Array<{ id: string
 }
 
 async function createCodexStateDatabase(codexHome: string, sql: string) {
-  await execFileAsync("sqlite3", [path.join(codexHome, "state_5.sqlite"), sql]);
+  await executeSqliteScript(path.join(codexHome, "state_5.sqlite"), sql);
 }
 
 async function createCodexGoalsDatabase(codexHome: string, sql: string) {
-  await execFileAsync("sqlite3", [path.join(codexHome, "goals_1.sqlite"), sql]);
+  await executeSqliteScript(path.join(codexHome, "goals_1.sqlite"), sql);
 }
 
 describe("codex parser", () => {
