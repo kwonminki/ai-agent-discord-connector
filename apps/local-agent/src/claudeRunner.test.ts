@@ -94,6 +94,50 @@ describe("runClaudePrompt", () => {
     }
   });
 
+  it("rejects output from a different session when resuming a Claude Code conversation", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-mismatch-"));
+    const fakeClaude = path.join(tempRoot, "claude");
+    const events: unknown[] = [];
+
+    try {
+      await writeFile(
+        fakeClaude,
+        [
+          "#!/usr/bin/env node",
+          "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'foreign-session' }));",
+          "console.log(JSON.stringify({ type: 'assistant', session_id: 'foreign-session', message: { content: [{ type: 'text', text: 'foreign answer' }] } }));",
+          "console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'foreign-session', result: 'foreign result' }));",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeClaude, 0o755);
+
+      await expect(
+        runClaudePrompt({
+          workspaceRoot: tempRoot,
+          cwd: tempRoot,
+          prompt: "Continue the expected conversation",
+          timeoutMs: 5_000,
+          claudeCommand: fakeClaude,
+          sessionId: "expected-session",
+          persistentSession: false,
+          onProgress: (event) => {
+            events.push(event);
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: "failed",
+        finalMessage: "",
+        sessionId: "expected-session",
+        stderr: expect.stringContaining("foreign-session"),
+        errorCode: "CLAUDE_SESSION_MISMATCH",
+      });
+      expect(events).toEqual([]);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces thinking blocks as agent-thought progress events", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-thought-"));
     const fakeClaude = path.join(tempRoot, "claude");

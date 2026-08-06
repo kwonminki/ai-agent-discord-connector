@@ -290,4 +290,54 @@ describe("persistent Claude Code sessions", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("terminates a persistent process that emits another conversation's session id", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-persist-mismatch-"));
+    const fakeClaude = path.join(tempRoot, "claude");
+    const events: unknown[] = [];
+
+    try {
+      await writeFile(
+        fakeClaude,
+        [
+          "#!/usr/bin/env node",
+          "const readline = require('node:readline');",
+          "const input = readline.createInterface({ input: process.stdin });",
+          "input.once('line', () => {",
+          "  console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'foreign-session' }));",
+          "  console.log(JSON.stringify({ type: 'assistant', session_id: 'foreign-session', message: { content: [{ type: 'text', text: 'foreign answer' }] } }));",
+          "  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'foreign-session', result: 'foreign result' }));",
+          "});",
+          "input.on('close', () => process.exit(0));",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeClaude, 0o755);
+
+      await expect(runClaudePrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "이어서 진행해줘",
+        timeoutMs: 5_000,
+        controlKey: "channel-mismatch",
+        sessionId: "expected-session",
+        claudeCommand: fakeClaude,
+        persistentSession: true,
+        onProgress: (event) => {
+          events.push(event);
+        },
+      })).resolves.toMatchObject({
+        status: "failed",
+        finalMessage: "",
+        sessionId: "expected-session",
+        stderr: expect.stringContaining("foreign-session"),
+        errorCode: "CLAUDE_SESSION_MISMATCH",
+      });
+      expect(events).toEqual([]);
+      expect(claudePersistentSessionCount()).toBe(0);
+    } finally {
+      await disposeClaudePersistentSessions("test-cleanup");
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

@@ -415,6 +415,15 @@ export function createDirectSyncStateStore(statePath = defaultDirectSyncStatePat
           throw new Error(`Discord session channel was not found: ${discordChannelId}`);
         }
 
+        if (
+          target.codexSessionId &&
+          target.codexSessionId.toLowerCase() !== normalizedSessionId.toLowerCase()
+        ) {
+          throw new Error(
+            `Discord channel ${discordChannelId} is already bound to Codex session ${target.codexSessionId}.`,
+          );
+        }
+
         if (target.pendingForkSourceSessionId?.toLowerCase() === normalizedSessionId.toLowerCase()) {
           throw new Error("Fork returned the source Codex session ID instead of a new session ID.");
         }
@@ -458,6 +467,15 @@ export function createDirectSyncStateStore(statePath = defaultDirectSyncStatePat
 
         if (!target) {
           throw new Error(`Discord session channel was not found: ${discordChannelId}`);
+        }
+
+        if (
+          target.claudeSessionId &&
+          target.claudeSessionId.toLowerCase() !== normalizedSessionId.toLowerCase()
+        ) {
+          throw new Error(
+            `Discord channel ${discordChannelId} is already bound to Claude Code session ${target.claudeSessionId}.`,
+          );
         }
 
         if (target.pendingForkSourceSessionId?.toLowerCase() === normalizedSessionId.toLowerCase()) {
@@ -569,7 +587,23 @@ export function createDirectSyncStateStore(statePath = defaultDirectSyncStatePat
         const existingRequest = state.discordRequestedCodexSessionRequests.find(
           (request) => request.sessionId === normalizedSessionId,
         );
-        const discordChannelId = options?.discordChannelId?.trim() || existingRequest?.discordChannelId || null;
+        const linkedChannels = state.sessionChannels.filter(
+          (channel) => channel.codexSessionId?.trim().toLowerCase() === normalizedSessionId,
+        );
+        const requestedChannelId = options?.discordChannelId?.trim() || null;
+        const linkedChannelIds = new Set(linkedChannels.map((channel) => channel.discordChannelId));
+        const canonicalLinkedChannelId = linkedChannels.length === 1
+          ? linkedChannels[0]?.discordChannelId ?? null
+          : existingRequest?.discordChannelId && linkedChannelIds.has(existingRequest.discordChannelId)
+            ? existingRequest.discordChannelId
+            : requestedChannelId && linkedChannelIds.has(requestedChannelId)
+              ? requestedChannelId
+              : null;
+        const discordChannelId =
+          canonicalLinkedChannelId ||
+          existingRequest?.discordChannelId ||
+          requestedChannelId ||
+          null;
 
         if (
           existingRequest &&

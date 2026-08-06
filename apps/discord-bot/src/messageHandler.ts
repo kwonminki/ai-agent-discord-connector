@@ -564,6 +564,32 @@ function extractAgentResponseSessionId(response: { result?: unknown; error?: unk
     : null;
 }
 
+function bindChannelSessionId(input: {
+  agentLabel: "Codex" | "Claude Code";
+  channelId: string;
+  currentSessionId: string | null;
+  candidateSessionId: string;
+}): string {
+  const currentSessionId = input.currentSessionId?.trim() || null;
+  const candidateSessionId = input.candidateSessionId.trim();
+
+  if (!candidateSessionId) {
+    throw new Error(`${input.agentLabel} returned an empty session ID.`);
+  }
+
+  if (
+    currentSessionId &&
+    currentSessionId.toLowerCase() !== candidateSessionId.toLowerCase()
+  ) {
+    throw new Error(
+      `${input.agentLabel} session isolation blocked a response for ${candidateSessionId}; ` +
+      `Discord channel ${input.channelId} is bound to ${currentSessionId}.`,
+    );
+  }
+
+  return currentSessionId ?? candidateSessionId;
+}
+
 function extractAgentResponseFinalMessage(response: { result?: unknown; error?: unknown }): string | null {
   return "result" in response &&
     typeof response.result === "object" &&
@@ -2395,6 +2421,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       let latestAgentMessage: string | null = null;
       let streamedSessionId =
         claudeSessionIdsByChannel.get(message.channelId) ?? channelContext.claudeSessionId ?? null;
+      let sessionBindingError: Error | null = null;
       const progressReporter = createLiveProgressReporter({ message, channelContext, agentLabel: "Claude Code" });
 
       try {
@@ -2414,12 +2441,24 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           },
           onProgress: async (event) => {
             touchChannelActivity(message.channelId);
-            if (event.type === "agent-message" && event.text?.trim()) {
-              latestAgentMessage = event.text.trim();
+            if (sessionBindingError) {
+              return;
             }
 
             if (event.type === "thread-started") {
-              streamedSessionId = event.sessionId;
+              try {
+                streamedSessionId = bindChannelSessionId({
+                  agentLabel: "Claude Code",
+                  channelId: message.channelId,
+                  currentSessionId: streamedSessionId,
+                  candidateSessionId: event.sessionId,
+                });
+              } catch (error) {
+                sessionBindingError = error instanceof Error ? error : new Error(String(error));
+                console.error("discord-bot blocked a cross-channel Claude Code session event", sessionBindingError);
+                return;
+              }
+
               recentEvents = appendProgressEvent(recentEvents, "생각중...");
               await updateQueuedReply(
                 queuedReply,
@@ -2431,6 +2470,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                 }),
               );
               return;
+            }
+
+            if (event.type === "agent-message" && event.text?.trim()) {
+              latestAgentMessage = event.text.trim();
             }
 
             const status =
@@ -2458,17 +2501,31 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             );
           },
         });
-        const responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
-        await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
         const responseSessionId = extractAgentResponseSessionId(response);
-        const responseFailed = promptResponseFailed(response);
+
+        if (sessionBindingError) {
+          throw sessionBindingError;
+        }
 
         if (responseSessionId) {
-          claudeSessionIdsByChannel.set(message.channelId, responseSessionId);
+          streamedSessionId = bindChannelSessionId({
+            agentLabel: "Claude Code",
+            channelId: message.channelId,
+            currentSessionId: streamedSessionId,
+            candidateSessionId: responseSessionId,
+          });
+        }
+
+        const responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+        await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
+        const responseFailed = promptResponseFailed(response);
+
+        if (streamedSessionId) {
           await input.recordClaudeSession?.({
             discordChannelId: message.channelId,
-            claudeSessionId: responseSessionId,
+            claudeSessionId: streamedSessionId,
           });
+          claudeSessionIdsByChannel.set(message.channelId, streamedSessionId);
         }
 
         const resultPayload = formatAgentResultUpdate(claudeMessage, responseForDisplay);
@@ -2580,6 +2637,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           routed.type === "codex-continue-session"
             ? routed.sessionId
             : codexSessionIdsByChannel.get(message.channelId) ?? channelContext.codexSessionId ?? null;
+        let sessionBindingError: Error | null = null;
 
         if (streamedSessionId) {
           await input.markDiscordRequestedCodexSession?.(streamedSessionId, {
@@ -2607,8 +2665,24 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           },
           onProgress: async (event) => {
             touchChannelActivity(message.channelId);
+            if (sessionBindingError) {
+              return;
+            }
+
             if (event.type === "thread-started") {
-              streamedSessionId = event.sessionId;
+              try {
+                streamedSessionId = bindChannelSessionId({
+                  agentLabel: "Codex",
+                  channelId: message.channelId,
+                  currentSessionId: streamedSessionId,
+                  candidateSessionId: event.sessionId,
+                });
+              } catch (error) {
+                sessionBindingError = error instanceof Error ? error : new Error(String(error));
+                console.error("discord-bot blocked a cross-channel Codex session event", sessionBindingError);
+                return;
+              }
+
               recentEvents = appendProgressEvent(recentEvents, "생각중...");
               await input.markDiscordRequestedCodexSession?.(streamedSessionId, {
                 discordChannelId: message.channelId,
@@ -2680,6 +2754,20 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           onUserInputRequest: (request) => requestCodexUserInput(reply, replyWithRoleMentions, message.channelId, request),
         });
         const nextSessionId = extractAgentResponseSessionId(response);
+
+        if (sessionBindingError) {
+          throw sessionBindingError;
+        }
+
+        if (nextSessionId) {
+          streamedSessionId = bindChannelSessionId({
+            agentLabel: "Codex",
+            channelId: message.channelId,
+            currentSessionId: streamedSessionId,
+            candidateSessionId: nextSessionId,
+          });
+        }
+
         let responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
         await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
 
@@ -2696,11 +2784,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
         const responseIntermediate = isIntermediateAgentResult(responseForDisplay);
 
-        if (nextSessionId) {
-          if (routed.type === "codex-chat") {
-            codexSessionIdsByChannel.set(message.channelId, nextSessionId);
-          }
-
+        if (streamedSessionId) {
           if (
             routed.type === "codex-chat" &&
             channelContext.channelMode === "session-linked" &&
@@ -2709,9 +2793,13 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           ) {
             await input.linkNewCodexSession({
               discordChannelId: message.channelId,
-              codexSessionId: nextSessionId,
+              codexSessionId: streamedSessionId,
               threadName: prompt.slice(0, 120) || "New Codex chat",
             });
+          }
+
+          if (routed.type === "codex-chat") {
+            codexSessionIdsByChannel.set(message.channelId, streamedSessionId);
           }
         }
 

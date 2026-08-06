@@ -244,6 +244,13 @@ describe("direct sync state store", () => {
       await store.updateSessionChannelCodexSession("channel-1", "session-new", "General Codex chat");
       await store.updateSessionChannelClaudeSession("channel-1", "claude-session-1");
 
+      await expect(
+        store.updateSessionChannelCodexSession("channel-1", "foreign-session", "Wrong chat"),
+      ).rejects.toThrow("already bound to Codex session session-new");
+      await expect(
+        store.updateSessionChannelClaudeSession("channel-1", "foreign-claude-session"),
+      ).rejects.toThrow("already bound to Claude Code session claude-session-1");
+
       await expect(store.findSessionChannelByDiscordId("channel-1")).resolves.toMatchObject({
         codexSessionId: "session-new",
         claudeSessionId: "claude-session-1",
@@ -324,6 +331,53 @@ describe("direct sync state store", () => {
             requestedAt: expect.any(String),
           },
         ],
+      });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a linked Codex session's Discord channel as canonical request provenance", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "direct-state-"));
+
+    try {
+      const store = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+
+      await store.write({
+        version: 1,
+        archivedCodexSessionIds: [],
+        workspaces: [],
+        sessionChannels: [{
+          codexSessionId: "session-1",
+          threadName: "Canonical session",
+          updatedAt: "2026-08-06T00:00:00.000Z",
+          cwd: "/repo",
+          workspaceRoot: "/repo",
+          workspaceDisplayName: "repo",
+          discordCategoryId: null,
+          discordChannelId: "canonical-channel",
+          channelName: "canonical-session",
+          computerId: "local-dev",
+          workspaceId: "local-dev:/repo",
+        }],
+        discordRequestedCodexSessionRequests: [{
+          sessionId: "session-1",
+          requestedAt: "2026-08-06T00:00:00.000Z",
+          discordChannelId: "foreign-channel",
+        }],
+      });
+
+      await store.markDiscordRequestedCodexSession("session-1", {
+        discordChannelId: "another-foreign-channel",
+        completionMentionSent: true,
+      });
+
+      await expect(store.read()).resolves.toMatchObject({
+        discordRequestedCodexSessionRequests: [{
+          sessionId: "session-1",
+          discordChannelId: "canonical-channel",
+          completionMentionSent: true,
+        }],
       });
     } finally {
       await rm(tempRoot, { recursive: true, force: true });

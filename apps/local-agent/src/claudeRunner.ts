@@ -438,6 +438,10 @@ function parseClaudeStreamLine(line: string): {
 
 type ParsedClaudeStreamEvent = NonNullable<ReturnType<typeof parseClaudeStreamLine>>;
 
+function claudeSessionMismatchMessage(expectedSessionId: string, receivedSessionId: string): string {
+  return `Claude Code emitted session ${receivedSessionId} while this runner is bound to ${expectedSessionId}.`;
+}
+
 function positiveIntegerEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -565,7 +569,7 @@ class PersistentClaudeSession {
   constructor(input: RunClaudePromptInput, controlKey: string, signature: string) {
     this.controlKey = controlKey;
     this.signature = signature;
-    this.sessionId = input.sessionId?.trim() || null;
+    this.sessionId = input.forkSession ? null : input.sessionId?.trim() || null;
     this.claudeCommand = resolveClaudeCommand(input);
     this.baseInput = { ...input, onProgress: undefined, signal: undefined };
     this.model = input.model?.trim() || null;
@@ -1001,8 +1005,12 @@ class PersistentClaudeSession {
       return;
     }
 
-    if (event.sessionId) {
-      this.sessionId = event.sessionId;
+    if (this.disposed) {
+      return;
+    }
+
+    if (event.sessionId && !this.acceptSessionId(event.sessionId)) {
+      return;
     }
 
     if (event.contextTokens !== undefined) {
@@ -1079,6 +1087,49 @@ class PersistentClaudeSession {
     } catch (error) {
       console.warn("claude idle notification sink failed", error);
     }
+  }
+
+  private acceptSessionId(candidateSessionId: string): boolean {
+    const normalizedCandidate = candidateSessionId.trim();
+
+    if (!normalizedCandidate) {
+      return true;
+    }
+
+    if (!this.sessionId) {
+      this.sessionId = normalizedCandidate;
+      return true;
+    }
+
+    if (this.sessionId.toLowerCase() === normalizedCandidate.toLowerCase()) {
+      return true;
+    }
+
+    const message = claudeSessionMismatchMessage(this.sessionId, normalizedCandidate);
+    const turn = this.activeTurn;
+    this.disposed = true;
+    this.removeFromPool();
+    this.killChild("SIGTERM");
+
+    if (turn && !turn.settled) {
+      turn.forceKillTimeout = setTimeout(() => {
+        this.killChild("SIGKILL");
+      }, 5_000);
+      turn.forceKillTimeout.unref();
+      this.settleTurn(turn, {
+        status: "failed",
+        finalMessage: "",
+        sessionId: this.sessionId,
+        stderr: message,
+        exitCode: null,
+        errorCode: "CLAUDE_SESSION_MISMATCH",
+      });
+    } else {
+      console.warn(message);
+      void this.dispose("session-mismatch").catch(() => undefined);
+    }
+
+    return false;
   }
 
   private scheduleIdleTtl(): void {
@@ -1168,7 +1219,8 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
   const stderrChunks: Buffer[] = [];
   const progressTasks: Promise<void>[] = [];
   let lineBuffer = "";
-  let sessionId: string | null = input.sessionId ?? null;
+  let sessionId: string | null = input.forkSession ? null : input.sessionId ?? null;
+  let sessionMismatch: string | null = null;
   let lastAssistantMessage = "";
   let finalMessage = "";
   let resultWasError = false;
@@ -1196,7 +1248,11 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
     }
 
     if (event.sessionId) {
-      sessionId = event.sessionId;
+      if (sessionId && sessionId.toLowerCase() !== event.sessionId.toLowerCase()) {
+        sessionMismatch ??= claudeSessionMismatchMessage(sessionId, event.sessionId);
+        return;
+      }
+      sessionId = sessionId ?? event.sessionId;
     }
 
     if (event.finalMessage) {
@@ -1351,6 +1407,10 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
       for (const line of lines) {
         if (line.trim()) {
           handleLine(line);
+          if (sessionMismatch) {
+            child.kill("SIGTERM");
+            break;
+          }
           endInputAfterTurn();
         }
       }
@@ -1384,6 +1444,17 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
 
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
       const rawStdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
+      if (sessionMismatch) {
+        settle({
+          status: "failed",
+          finalMessage: "",
+          sessionId,
+          stderr: sessionMismatch,
+          exitCode: code,
+          errorCode: "CLAUDE_SESSION_MISMATCH",
+        });
+        return;
+      }
       if (interrupted) {
         settle(interruptedResult());
         return;

@@ -2888,6 +2888,161 @@ describe("createDiscordMessageHandler", () => {
     }));
   });
 
+  it("rejects cross-session responses without changing Codex or Claude channel bindings", async () => {
+    const contexts = new Map<string, ManagedDiscordChannelContext>([
+      ["codex-channel", { ...sessionChannelContext, codexSessionId: "codex-session-a" }],
+      ["claude-channel", { ...claudeChannelContext, claudeSessionId: "claude-session-a" }],
+    ]);
+    const submitCodexPrompt = vi.fn(async (input) => {
+      if (input.payload.prompt === "first") {
+        await input.onProgress?.({ type: "thread-started", sessionId: "codex-session-b" });
+        return {
+          jobId: "codex-job-foreign",
+          result: {
+            status: "completed",
+            finalMessage: "foreign Codex answer",
+            sessionId: "codex-session-b",
+          },
+        };
+      }
+
+      return {
+        jobId: "codex-job-expected",
+        result: {
+          status: "completed",
+          finalMessage: "expected Codex answer",
+          sessionId: input.payload.sessionId,
+        },
+      };
+    });
+    const submitClaudePrompt = vi.fn(async (input) => {
+      if (input.payload.prompt === "first") {
+        await input.onProgress?.({ type: "thread-started", sessionId: "claude-session-b" });
+        return {
+          jobId: "claude-job-foreign",
+          result: {
+            status: "completed",
+            finalMessage: "foreign Claude answer",
+            sessionId: "claude-session-b",
+          },
+        };
+      }
+
+      return {
+        jobId: "claude-job-expected",
+        result: {
+          status: "completed",
+          finalMessage: "expected Claude answer",
+          sessionId: input.payload.sessionId,
+        },
+      };
+    });
+    const recordClaudeSession = vi.fn();
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async (channelId) => contexts.get(channelId) ?? null,
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      submitClaudePrompt,
+      recordClaudeSession,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    const send = (channelId: string, content: string) => handleMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId,
+      content,
+      roleIds: ["role-operator"],
+      reply: async () => ({ edit: async () => undefined }),
+    });
+
+    await send("codex-channel", "first");
+    await send("claude-channel", "first");
+    await send("codex-channel", "second");
+    await send("claude-channel", "second");
+
+    expect(submitCodexPrompt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        payload: expect.objectContaining({ sessionId: "codex-session-a" }),
+      }),
+    );
+    expect(submitClaudePrompt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        payload: expect.objectContaining({ sessionId: "claude-session-a" }),
+      }),
+    );
+    expect(recordClaudeSession).not.toHaveBeenCalledWith(expect.objectContaining({
+      claudeSessionId: "claude-session-b",
+    }));
+  });
+
+  it("does not cache new session IDs when durable channel linking fails", async () => {
+    const contexts = new Map<string, ManagedDiscordChannelContext>([
+      ["codex-pending", { ...sessionChannelContext, codexSessionId: null }],
+      ["claude-pending", { ...claudeChannelContext, claudeSessionId: null }],
+    ]);
+    const submitCodexPrompt = vi.fn().mockResolvedValue({
+      jobId: "codex-job-new",
+      result: {
+        status: "completed",
+        finalMessage: "new Codex answer",
+        sessionId: "new-codex-session",
+      },
+    });
+    const submitClaudePrompt = vi.fn().mockResolvedValue({
+      jobId: "claude-job-new",
+      result: {
+        status: "completed",
+        finalMessage: "new Claude answer",
+        sessionId: "new-claude-session",
+      },
+    });
+    const linkNewCodexSession = vi.fn().mockRejectedValue(
+      Object.assign(new Error("no space left on device"), { code: "ENOSPC" }),
+    );
+    const recordClaudeSession = vi.fn().mockRejectedValue(
+      Object.assign(new Error("no space left on device"), { code: "ENOSPC" }),
+    );
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async (channelId) => contexts.get(channelId) ?? null,
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      submitClaudePrompt,
+      linkNewCodexSession,
+      recordClaudeSession,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    const send = (channelId: string, content: string) => handleMessage({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId,
+      content,
+      roleIds: ["role-operator"],
+      reply: async () => ({ edit: async () => undefined }),
+    });
+
+    await send("codex-pending", "first");
+    await send("claude-pending", "first");
+    await send("codex-pending", "second");
+    await send("claude-pending", "second");
+
+    expect(submitCodexPrompt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        payload: expect.objectContaining({ sessionId: null }),
+      }),
+    );
+    expect(submitClaudePrompt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        payload: expect.objectContaining({ sessionId: null }),
+      }),
+    );
+  });
+
   it("stores a channel Codex run mode and passes reasoning effort to later prompts", async () => {
     const replies: unknown[] = [];
     const submitCodexPrompt = vi.fn().mockResolvedValue({
