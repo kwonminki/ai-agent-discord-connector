@@ -99,7 +99,10 @@ async function runWorkerJob(
   if (request.type === "run-claude-prompt") {
     return runClaudePrompt({
       ...request.payload,
-      controlKey: request.payload.controlKey ?? request.queueKey,
+      // The durable queue key is the worker's channel-isolation boundary.
+      // Never let a stale session-derived payload key register controls under
+      // a different Discord channel than the one this job is serialized on.
+      controlKey: request.queueKey,
       onProgress: (event) => store.appendProgress(request.jobId, event),
       signal,
     });
@@ -107,6 +110,9 @@ async function runWorkerJob(
 
   const runnerInput: RunCodexPromptInput = {
     ...request.payload.input,
+    // Keep the app-server registry and active execution map on the same
+    // authoritative key for steering and interrupts across turn changes.
+    controlKey: request.queueKey,
     onProgress: (event) => store.appendProgress(request.jobId, event),
     onApprovalRequest: async (approvalRequest) => {
       const approvalId = await store.requestApproval(request.jobId, approvalRequest);

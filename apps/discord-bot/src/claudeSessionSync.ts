@@ -233,7 +233,11 @@ function parseClaudeCodeSessionText(input: {
   previous?: DiscoveredClaudeCodeSession | null;
 }): ParsedClaudeSessionText {
   const fallbackId = path.basename(input.filePath, ".jsonl");
-  let sessionId: string | null = input.previous?.id ?? fallbackId ?? null;
+  // Claude stores one conversation per <session-id>.jsonl. Treat that file
+  // identity as authoritative: a stray record from another conversation must
+  // not rename this discovered session and make several Discord threads look
+  // as though they share the same session.
+  const sessionId: string | null = fallbackId || null;
   let cwd: string | null = input.previous?.cwd ?? null;
   let entrypoint: string | null = input.previous?.entrypoint ?? null;
   let firstUserMessage: string | null = input.previous?.firstUserMessage ?? null;
@@ -257,7 +261,14 @@ function parseClaudeCodeSessionText(input: {
       continue;
     }
 
-    sessionId = asString(record.sessionId) ?? sessionId;
+    const recordSessionId = asString(record.sessionId);
+    if (
+      recordSessionId &&
+      sessionId &&
+      recordSessionId.toLowerCase() !== sessionId.toLowerCase()
+    ) {
+      continue;
+    }
     cwd = asString(record.cwd) ?? cwd;
     entrypoint = asString(record.entrypoint) ?? entrypoint;
     const previousUpdatedAt = updatedAt;
@@ -382,7 +393,9 @@ export async function discoverClaudeCodeSessions(
   const projectsRoot = input.projectsRoot ?? defaultClaudeProjectsRoot(input.claudeHome);
   const updatedAfterTime = input.updatedAfter ? input.updatedAfter.getTime() : null;
   const excludedSessionIds = new Set(
-    [...(input.excludeSessionIds ?? [])].map((sessionId) => sessionId.trim()).filter(Boolean),
+    [...(input.excludeSessionIds ?? [])]
+      .map((sessionId) => sessionId.trim().toLowerCase())
+      .filter(Boolean),
   );
   const projectDirs = await readdir(projectsRoot, { withFileTypes: true }).catch((error: unknown) => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
@@ -407,7 +420,7 @@ export async function discoverClaudeCodeSessions(
       }
 
       const fileSessionId = path.basename(file.name, ".jsonl");
-      if (excludedSessionIds.has(fileSessionId)) {
+      if (excludedSessionIds.has(fileSessionId.toLowerCase())) {
         continue;
       }
 
@@ -481,7 +494,7 @@ function knownClaudeSessionIds(state: DirectSyncState): Set<string> {
     state.sessionChannels
       .map((channel) => channel.claudeSessionId)
       .filter((sessionId): sessionId is string => Boolean(sessionId?.trim()))
-      .map((sessionId) => sessionId.trim()),
+      .map((sessionId) => sessionId.trim().toLowerCase()),
   );
 }
 
@@ -527,7 +540,7 @@ export async function syncClaudeCodeSessionsToDiscord(
         return false;
       }
 
-      if (existingClaudeSessionIds.has(session.id)) {
+      if (existingClaudeSessionIds.has(session.id.toLowerCase())) {
         result.skippedExisting += 1;
         return false;
       }
@@ -543,7 +556,7 @@ export async function syncClaudeCodeSessionsToDiscord(
   for (const session of selectedSessions) {
     const created = await createClaudeSessionThreadForSession(input, session);
     state.sessionChannels.push(created.channel);
-    existingClaudeSessionIds.add(session.id);
+    existingClaudeSessionIds.add(session.id.toLowerCase());
     result.createdThreads += 1;
   }
 
@@ -653,7 +666,8 @@ export async function resumeClaudeCodeSessionThread(
 ): Promise<ResumeClaudeCodeSessionResult> {
   const sessionId = input.sessionId.trim();
   const sessions = await discoverClaudeCodeSessions({ claudeHome: input.claudeHome });
-  const session = sessions.find((candidate) => candidate.id === sessionId) ?? null;
+  const normalizedSessionId = sessionId.toLowerCase();
+  const session = sessions.find((candidate) => candidate.id.toLowerCase() === normalizedSessionId) ?? null;
 
   if (!session) {
     return { status: "not-found" };
@@ -661,7 +675,7 @@ export async function resumeClaudeCodeSessionThread(
 
   const state = await input.stateStore.read();
   const linkedChannels = state.sessionChannels.filter(
-    (channel) => channel.claudeSessionId?.trim() === sessionId,
+    (channel) => channel.claudeSessionId?.trim().toLowerCase() === normalizedSessionId,
   );
 
   for (const linked of linkedChannels) {
@@ -680,7 +694,7 @@ export async function resumeClaudeCodeSessionThread(
     await input.stateStore.update((latestState) => ({
       ...latestState,
       sessionChannels: latestState.sessionChannels.filter(
-        (channel) => channel.claudeSessionId?.trim() !== sessionId,
+        (channel) => channel.claudeSessionId?.trim().toLowerCase() !== normalizedSessionId,
       ),
     }));
   }

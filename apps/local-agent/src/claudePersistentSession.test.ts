@@ -7,6 +7,7 @@ import {
   disposeClaudePersistentSessions,
   runClaudePrompt,
   setClaudeSessionIdleNotificationSink,
+  steerActiveClaudeTurn,
   type ClaudeSessionIdleNotification,
 } from "./claudeRunner.js";
 
@@ -120,6 +121,77 @@ describe("persistent Claude Code sessions", () => {
         "첫 번째 턴",
         "두 번째 턴",
       ]);
+    } finally {
+      await disposeClaudePersistentSessions("test-cleanup");
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not accept steering after Claude has ended the active turn", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-persist-turn-end-"));
+    const fakeClaude = path.join(tempRoot, "claude");
+    const inputsPath = path.join(tempRoot, "inputs.json");
+    const turnEndedPath = path.join(tempRoot, "turn-ended");
+
+    try {
+      await writeFile(
+        fakeClaude,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const readline = require('node:readline');",
+          "const messages = [];",
+          "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'persist-turn-end-1' }));",
+          "const input = readline.createInterface({ input: process.stdin });",
+          "input.on('line', (line) => {",
+          "  messages.push(JSON.parse(line));",
+          `  fs.writeFileSync(${JSON.stringify(inputsPath)}, JSON.stringify(messages));`,
+          "  if (messages.length === 1) {",
+          "    console.log(JSON.stringify({ type: 'assistant', session_id: 'persist-turn-end-1', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'first turn done' }] } }));",
+          `    fs.writeFileSync(${JSON.stringify(turnEndedPath)}, 'done');`,
+          "    setTimeout(() => console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'persist-turn-end-1', result: 'first result' })), 150);",
+          "  }",
+          "});",
+          "input.on('close', () => process.exit(0));",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeClaude, 0o755);
+
+      const run = runClaudePrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "first request",
+        timeoutMs: 5_000,
+        controlKey: "channel-turn-end",
+        claudeCommand: fakeClaude,
+        persistentSession: true,
+      });
+
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (await readFile(turnEndedPath, "utf8").catch(() => "")) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      await expect(steerActiveClaudeTurn(
+        "channel-turn-end",
+        "this must become the next durable turn",
+      )).resolves.toMatchObject({
+        status: "failed",
+        message: "Claude Code input stream is no longer writable.",
+      });
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        finalMessage: "first result",
+        sessionId: "persist-turn-end-1",
+      });
+
+      const inputs = JSON.parse(await readFile(inputsPath, "utf8")) as Array<{
+        message: { content: Array<{ text: string }> };
+      }>;
+      expect(inputs.map((message) => message.message.content[0]?.text)).toEqual(["first request"]);
     } finally {
       await disposeClaudePersistentSessions("test-cleanup");
       await rm(tempRoot, { recursive: true, force: true });

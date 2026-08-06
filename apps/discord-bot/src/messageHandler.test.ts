@@ -2678,11 +2678,13 @@ describe("createDiscordMessageHandler", () => {
     });
     expect(submitClaudePrompt).toHaveBeenCalledWith(
       expect.objectContaining({
+        queueKey: "fork-thread-1",
         payload: expect.objectContaining({
           sessionId: "claude-source-session-1",
           forkSession: true,
           sessionName: "GPU experiment",
           cwd: "/repo",
+          controlKey: "fork-thread-1",
         }),
       }),
     );
@@ -2785,6 +2787,7 @@ describe("createDiscordMessageHandler", () => {
     });
     expect(submitCodexPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
+        queueKey: "codex-fork-thread-1",
         payload: expect.objectContaining({
           sessionId: "codex-source-session-1",
           forkSession: true,

@@ -2232,7 +2232,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
           const response = await input.submitClaudePrompt({
             computerId: channelContext.computerId,
-            ...(message.requestId ? { requestId: message.requestId, queueKey: message.channelId } : {}),
+            ...(message.requestId ? { requestId: message.requestId } : {}),
+            queueKey: forkThread.discordChannelId,
             payload: {
               workspaceRoot: forkThread.workspaceRoot,
               cwd: forkThread.cwd,
@@ -2243,6 +2244,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               sessionName: forkThread.threadName,
               model: agentSettings.model,
               effort: agentSettings.effort,
+              controlKey: forkThread.discordChannelId,
             },
           });
 
@@ -2278,7 +2280,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
           const response = await input.submitCodexPrompt({
             computerId: channelContext.computerId,
-            ...(message.requestId ? { requestId: message.requestId, queueKey: message.channelId } : {}),
+            ...(message.requestId ? { requestId: message.requestId } : {}),
+            queueKey: forkThread.discordChannelId,
             payload: {
               workspaceRoot: forkThread.workspaceRoot,
               cwd: forkThread.cwd,

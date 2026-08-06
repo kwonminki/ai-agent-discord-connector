@@ -89,9 +89,63 @@ describe("discoverClaudeCodeSessions", () => {
       await expect(
         discoverClaudeCodeSessions({
           claudeHome: path.join(tempRoot, ".claude"),
-          excludeSessionIds: ["known-session"],
+          excludeSessionIds: ["KNOWN-SESSION"],
         }),
       ).resolves.toEqual([]);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the file session identity when a foreign record is present", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-sync-isolation-"));
+    const projectRoot = path.join(tempRoot, ".claude", "projects", "-repo");
+    const sessionPath = path.join(projectRoot, "expected-session.jsonl");
+
+    try {
+      await mkdir(projectRoot, { recursive: true });
+      await writeFile(
+        sessionPath,
+        [
+          JSON.stringify({
+            type: "user",
+            sessionId: "expected-session",
+            cwd: "/repo/expected",
+            entrypoint: "claude-vscode",
+            timestamp: "2026-07-20T04:31:37.956Z",
+            message: { role: "user", content: "expected prompt" },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            sessionId: "foreign-session",
+            cwd: "/repo/foreign",
+            entrypoint: "claude-vscode",
+            timestamp: "2026-07-20T04:32:00.000Z",
+            message: { role: "assistant", content: "foreign answer" },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            sessionId: "expected-session",
+            cwd: "/repo/expected",
+            entrypoint: "claude-vscode",
+            timestamp: "2026-07-20T04:32:10.000Z",
+            message: { role: "assistant", content: "expected answer" },
+          }),
+        ].join("\n"),
+        "utf8",
+      );
+
+      await expect(discoverClaudeCodeSessions({
+        claudeHome: path.join(tempRoot, ".claude"),
+      })).resolves.toEqual([
+        expect.objectContaining({
+          id: "expected-session",
+          cwd: "/repo/expected",
+          firstUserMessage: "expected prompt",
+          latestAssistantMessage: "expected answer",
+          updatedAt: "2026-07-20T04:32:10.000Z",
+        }),
+      ]);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

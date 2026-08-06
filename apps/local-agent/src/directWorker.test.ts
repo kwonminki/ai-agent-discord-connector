@@ -393,7 +393,9 @@ describe("direct worker", () => {
           cwd: root,
           prompt: "first request",
           timeoutMs: 60_000,
-          controlKey: "thread-claude",
+          // Simulate a stale, session-derived key from an older bot turn. The
+          // durable queue key must remain authoritative for channel controls.
+          controlKey: "stale-claude-control-key",
           claudeCommand: fakeClaude,
         },
       });
@@ -405,6 +407,13 @@ describe("direct worker", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
 
+      await expect(client.control({
+        controlKey: "stale-claude-control-key",
+        action: "steer",
+        content: "must not cross channel isolation",
+      })).resolves.toMatchObject({
+        status: "no-active-turn",
+      });
       await expect(client.control({
         controlKey: "thread-claude",
         action: "steer",
@@ -456,6 +465,7 @@ describe("direct worker", () => {
           cwd: root,
           prompt: "keep working",
           timeoutMs: 60_000,
+          controlKey: "stale-claude-control-key",
           claudeCommand: fakeClaude,
         },
       });

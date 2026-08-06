@@ -530,6 +530,7 @@ interface PersistentTurnState {
   reusedSession: boolean;
   settled: boolean;
   interrupted: boolean;
+  acceptingInput: boolean;
   lastAssistantMessage: string;
   finalMessage: string;
   resultWasError: boolean;
@@ -754,6 +755,7 @@ class PersistentClaudeSession {
         reusedSession,
         settled: false,
         interrupted: false,
+        acceptingInput: true,
         lastAssistantMessage: "",
         finalMessage: "",
         resultWasError: false,
@@ -847,6 +849,7 @@ class PersistentClaudeSession {
       !turn ||
       turn.settled ||
       turn.interrupted ||
+      !turn.acceptingInput ||
       this.exited ||
       !this.child.stdin ||
       this.child.stdin.destroyed ||
@@ -1025,6 +1028,14 @@ class PersistentClaudeSession {
 
     if (event.finalMessage) {
       turn.finalMessage = event.finalMessage;
+    }
+
+    if (event.turnEnded || event.isResult) {
+      // Claude may emit end_turn shortly before its result record. Input
+      // written in that gap belongs to the next turn, not the active one. By
+      // closing steering here, the bot can safely queue the message as the
+      // next durable turn instead of reporting a false steering success.
+      turn.acceptingInput = false;
     }
 
     if (event.isResult) {
