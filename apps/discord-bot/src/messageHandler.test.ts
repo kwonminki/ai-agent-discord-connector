@@ -990,6 +990,66 @@ describe("createDiscordMessageHandler", () => {
     await first;
   });
 
+  it("queues an ordinary follow-up instead of losing it when the active turn never becomes ready", async () => {
+    const promptResolvers: Array<(value: unknown) => void> = [];
+    const submitCodexPrompt = vi.fn().mockImplementation(
+      () => new Promise((resolve) => promptResolvers.push(resolve)),
+    );
+    const controlCodexTurn = vi.fn().mockResolvedValue({
+      status: "no-active-turn",
+      message: "turn is still starting",
+    });
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        codexSessionId: "session-1",
+        discordDeliveryMode: "thread",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      controlCodexTurn,
+      autoSteerRetryDelayMs: 0,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    const userMessage = (content: string) => ({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "thread-1",
+      content,
+      roleIds: ["role-operator"],
+      reply: async () => ({ edit: async () => undefined }),
+    });
+
+    const first = handleMessage(userMessage("첫 번째 긴 작업"));
+    await vi.waitFor(() => expect(promptResolvers).toHaveLength(1));
+    const followUp = handleMessage(userMessage("반드시 보존할 추가 지시"));
+    await vi.waitFor(() => expect(controlCodexTurn).toHaveBeenCalledTimes(8));
+
+    expect(submitCodexPrompt).toHaveBeenCalledTimes(1);
+    promptResolvers[0]?.({
+      jobId: "job-1",
+      result: {
+        status: "completed",
+        finalMessage: "첫 작업 완료",
+        sessionId: "session-1",
+      },
+    });
+    await first;
+    await vi.waitFor(() => expect(promptResolvers).toHaveLength(2));
+
+    promptResolvers[1]?.({
+      jobId: "job-2",
+      result: {
+        status: "completed",
+        finalMessage: "추가 지시도 처리 완료",
+        sessionId: "session-1",
+      },
+    });
+    await followUp;
+    expect(submitCodexPrompt).toHaveBeenCalledTimes(2);
+  });
+
   it("does not silently queue an ordinary follow-up when active-turn steering is unsupported", async () => {
     let firstPromptWaiting = false;
     let finishFirstPrompt: (value: unknown) => void = () => {

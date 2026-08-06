@@ -214,7 +214,7 @@ describe("runCodexAppServerPrompt", () => {
                 id: message.id,
                 error: {
                   code: -32600,
-                  message: "expected active turn id 'discord-turn-1' but found 'goal-continuation-2'",
+                  message: "turn discord-turn-1 is no longer active",
                 },
               }));
             } else {

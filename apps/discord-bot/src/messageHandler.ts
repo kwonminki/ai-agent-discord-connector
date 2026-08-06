@@ -1121,6 +1121,14 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       return false;
     }
 
+    if (result.status === "no-active-turn") {
+      // The Discord queue can become active slightly before the durable
+      // worker has registered its app-server turn. If every readiness retry
+      // misses that window, preserve this message as the next queued turn
+      // instead of consuming and losing the user's instruction.
+      return false;
+    }
+
     touchChannelActivity(message.channelId);
 
     try {

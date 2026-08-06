@@ -290,6 +290,71 @@ describe("direct worker", () => {
     }
   });
 
+  it("keeps steering pending while an active app-server job is still registering its turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-starting-control-"));
+    const fakeCodex = path.join(root, "codex");
+    const store = createDirectWorkerStore(path.join(root, "worker"));
+    let controlAttempts = 0;
+    await writeFile(fakeCodex, [
+      "#!/usr/bin/env node",
+      "setTimeout(() => process.exit(0), 500);",
+    ].join("\n"), "utf8");
+    await chmod(fakeCodex, 0o755);
+    const worker = await startDirectWorker({
+      store,
+      pollIntervalMs: 10,
+      maxConcurrency: 1,
+      controlCodexTurn: async () => {
+        controlAttempts += 1;
+        return controlAttempts < 3
+          ? { status: "no-active-turn", message: "turn is still starting" }
+          : { status: "accepted", message: "steering applied after startup" };
+      },
+    });
+    const client = createDirectWorkerClient({ store, pollIntervalMs: 10 });
+
+    try {
+      const job = client.submit({
+        jobId: "starting-codex-job",
+        type: "run-codex-prompt",
+        queueKey: "thread-starting",
+        payload: {
+          runner: "app-server",
+          input: {
+            workspaceRoot: root,
+            cwd: root,
+            prompt: "start slowly",
+            timeoutMs: 1_000,
+            controlKey: "thread-starting",
+            codexCommand: fakeCodex,
+            codexHome: root,
+          },
+        },
+      });
+
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((await store.readState("starting-codex-job"))?.status === "running") {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      await expect(client.control({
+        controlKey: "thread-starting",
+        action: "steer",
+        content: "do this first",
+      })).resolves.toEqual({
+        status: "accepted",
+        message: "steering applied after startup",
+      });
+      expect(controlAttempts).toBe(3);
+      await job;
+    } finally {
+      await worker.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("steers an active Claude Code process through the durable control mailbox", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-claude-steer-"));
     const fakeClaude = path.join(root, "claude");

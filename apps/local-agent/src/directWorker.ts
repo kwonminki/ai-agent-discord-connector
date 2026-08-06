@@ -310,6 +310,26 @@ export async function startDirectWorker(options: {
         }
       }
       const result = await controlCodexTurn(control);
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        (result as { status?: unknown }).status === "no-active-turn" &&
+        activeExecution &&
+        (
+          activeExecution.request.type === "run-claude-prompt" ||
+          (
+            activeExecution.request.type === "run-codex-prompt" &&
+            activeExecution.request.payload.runner === "app-server" &&
+            activeExecution.request.payload.input.mode !== "review"
+          )
+        )
+      ) {
+        // The durable job is already running, but its agent process may still
+        // be starting and not have registered the active turn yet. Keep the
+        // control request pending so the next worker tick applies it instead
+        // of acknowledging a transient no-active-turn and losing the input.
+        continue;
+      }
       await store.completeControl(control.controlId, result);
     }
   }

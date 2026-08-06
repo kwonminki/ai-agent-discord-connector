@@ -134,11 +134,6 @@ interface ActiveCodexAppServerTurn {
 
 const activeTurnsByControlKey = new Map<string, ActiveCodexAppServerTurn>();
 
-function isActiveTurnMismatch(error: unknown): boolean {
-  return error instanceof Error &&
-    /expected active turn id\b.*\bfound\b/i.test(error.message);
-}
-
 function inProgressTurnId(response: unknown, expectedThreadId: string): string | null {
   if (typeof response !== "object" || response === null) {
     return null;
@@ -227,27 +222,25 @@ export async function steerActiveCodexAppServerTurn(
       turnId: activeTurn.turnId,
     };
   } catch (error) {
-    if (isActiveTurnMismatch(error)) {
-      try {
-        const threadResult = await activeTurn.request("thread/read", {
-          threadId: activeTurn.threadId,
-          includeTurns: true,
-        });
-        const refreshedTurnId = inProgressTurnId(threadResult, activeTurn.threadId);
+    try {
+      const threadResult = await activeTurn.request("thread/read", {
+        threadId: activeTurn.threadId,
+        includeTurns: true,
+      });
+      const refreshedTurnId = inProgressTurnId(threadResult, activeTurn.threadId);
 
-        if (refreshedTurnId && refreshedTurnId !== activeTurn.turnId) {
-          await steer(refreshedTurnId);
-          activeTurn.turnId = refreshedTurnId;
-          return {
-            status: "accepted",
-            message: "현재 Codex turn을 다시 확인한 뒤 추가 지시를 전달했습니다.",
-            threadId: activeTurn.threadId,
-            turnId: refreshedTurnId,
-          };
-        }
-      } catch (retryError) {
-        error = retryError;
+      if (refreshedTurnId && refreshedTurnId !== activeTurn.turnId) {
+        await steer(refreshedTurnId);
+        activeTurn.turnId = refreshedTurnId;
+        return {
+          status: "accepted",
+          message: "현재 Codex turn을 다시 확인한 뒤 추가 지시를 전달했습니다.",
+          threadId: activeTurn.threadId,
+          turnId: refreshedTurnId,
+        };
       }
+    } catch (retryError) {
+      error = retryError;
     }
 
     return {
@@ -286,27 +279,25 @@ export async function interruptActiveCodexAppServerTurn(
       turnId: activeTurn.turnId,
     };
   } catch (error) {
-    if (isActiveTurnMismatch(error)) {
-      try {
-        const threadResult = await activeTurn.request("thread/read", {
-          threadId: activeTurn.threadId,
-          includeTurns: true,
-        });
-        const refreshedTurnId = inProgressTurnId(threadResult, activeTurn.threadId);
+    try {
+      const threadResult = await activeTurn.request("thread/read", {
+        threadId: activeTurn.threadId,
+        includeTurns: true,
+      });
+      const refreshedTurnId = inProgressTurnId(threadResult, activeTurn.threadId);
 
-        if (refreshedTurnId && refreshedTurnId !== activeTurn.turnId) {
-          await interrupt(refreshedTurnId);
-          activeTurn.turnId = refreshedTurnId;
-          return {
-            status: "accepted",
-            message: "현재 Codex turn을 다시 확인한 뒤 중단 요청을 전달했습니다.",
-            threadId: activeTurn.threadId,
-            turnId: refreshedTurnId,
-          };
-        }
-      } catch (retryError) {
-        error = retryError;
+      if (refreshedTurnId && refreshedTurnId !== activeTurn.turnId) {
+        await interrupt(refreshedTurnId);
+        activeTurn.turnId = refreshedTurnId;
+        return {
+          status: "accepted",
+          message: "현재 Codex turn을 다시 확인한 뒤 중단 요청을 전달했습니다.",
+          threadId: activeTurn.threadId,
+          turnId: refreshedTurnId,
+        };
       }
+    } catch (retryError) {
+      error = retryError;
     }
 
     return {
@@ -1742,6 +1733,19 @@ async function runPromptAgainstAppServer(input: {
     }
   }
 
+  function registerActiveTurn(turnId: string): void {
+    activeTurnId = turnId;
+    const controlKey = input.input.controlKey?.trim();
+
+    if (controlKey && sessionId && !turnFinished) {
+      activeTurnsByControlKey.set(controlKey, {
+        threadId: sessionId,
+        turnId,
+        request,
+      });
+    }
+  }
+
   function request(method: string, params: unknown): Promise<unknown> {
     const id = nextRequestId++;
     socket.send(JSON.stringify({ method, id, params }));
@@ -2138,15 +2142,10 @@ async function runPromptAgainstAppServer(input: {
             model: model(input.input),
             effort: reasoningEffort(input.input),
           });
-          activeTurnId = turnIdFromResponse(turnResult);
+          const startedTurnId = turnIdFromResponse(turnResult);
 
-          const controlKey = input.input.controlKey?.trim();
-          if (controlKey && sessionId && activeTurnId && !turnFinished) {
-            activeTurnsByControlKey.set(controlKey, {
-              threadId: sessionId,
-              turnId: activeTurnId,
-              request,
-            });
+          if (startedTurnId) {
+            registerActiveTurn(startedTurnId);
           }
         } catch (error) {
           if (timeout) {
