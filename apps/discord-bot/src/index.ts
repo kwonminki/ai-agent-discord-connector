@@ -80,6 +80,18 @@ const DEFAULT_SCHEDULE_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_BACKGROUND_POLL_MAX_INTERVAL_MS = 20_000;
 const DEFAULT_BACKGROUND_MAX_NORMALIZED_LOAD = 0.7;
 
+export function linkedCodexSessionIds(
+  sessionChannels: Array<{ codexSessionId?: string | null }>,
+): string[] {
+  return [
+    ...new Set(
+      sessionChannels
+        .map((channel) => channel.codexSessionId?.trim() ?? "")
+        .filter((sessionId) => sessionId.length > 0),
+    ),
+  ];
+}
+
 export function resolveRealtimeIntervalMs(value: string | undefined, fallbackMs: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
 
@@ -429,9 +441,7 @@ export async function startBot(): Promise<void> {
             };
           }
 
-          const linkedSessionIds = state.sessionChannels
-            .map((channel) => channel.codexSessionId)
-            .filter((sessionId): sessionId is string => Boolean(sessionId));
+          const linkedSessionIds = linkedCodexSessionIds(state.sessionChannels);
 
           if (linkedSessionIds.length === 0) {
             return {
@@ -468,9 +478,12 @@ export async function startBot(): Promise<void> {
   const notifyTaskCompletions =
     connectConfig?.mode === "direct" && directStateStore
       ? async (input: { guild: DiscordGuildSurface }) => {
+          const state = await directStateStore.read();
+          const linkedSessionIds = linkedCodexSessionIds(state.sessionChannels);
           const sessions = await listDirectCodexSessions?.({
             activeOnly: false,
             includeExecSessions: true,
+            includeSessionIds: linkedSessionIds,
           });
 
           if (!sessions) {

@@ -27,6 +27,7 @@ describe("bot entrypoint", () => {
       recordBackgroundPollResult,
       resolveBackgroundMaxNormalizedLoad,
       resolveRealtimeIntervalMs,
+      linkedCodexSessionIds,
       shouldDeferBotRestart,
       shouldRunBackgroundPoll,
       shouldRunRealtimeSessionAutosync,
@@ -45,6 +46,12 @@ describe("bot entrypoint", () => {
     expect(shouldDeferBotRestart({ activeCount: 1, pendingCount: 0 })).toBe(true);
     expect(shouldDeferBotRestart({ activeCount: 0, pendingCount: 1 })).toBe(true);
     expect(shouldDeferBotRestart({ activeCount: 0, pendingCount: 0 })).toBe(false);
+    expect(linkedCodexSessionIds([
+      { codexSessionId: " session-indexed " },
+      { codexSessionId: "session-file-only" },
+      { codexSessionId: "session-indexed" },
+      { codexSessionId: null },
+    ])).toEqual(["session-indexed", "session-file-only"]);
 
     const pollState = createBackgroundPollState(1_000, 5_000);
     expect(shouldRunBackgroundPoll(pollState, 1_000)).toBe(true);
