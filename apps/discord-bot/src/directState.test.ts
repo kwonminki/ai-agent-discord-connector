@@ -325,6 +325,7 @@ describe("direct sync state store", () => {
             requestedAt: expect.any(String),
             discordChannelId: "thread-1",
             completionMentionSent: true,
+            completionMentionSentAt: expect.any(String),
           },
           {
             sessionId: "session-2",
@@ -332,6 +333,43 @@ describe("direct sync state store", () => {
           },
         ],
       });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a fresh turn after a delivered Discord completion marker", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "direct-state-"));
+
+    try {
+      const store = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+      const state = await store.read();
+      await store.write({
+        ...state,
+        taskCompletionNotifications: [
+          {
+            sessionId: "session-1",
+            lastTaskCompleteEventKey: "complete-1",
+          },
+        ],
+      });
+
+      await store.markDiscordRequestedCodexSession("session-1", {
+        discordChannelId: "thread-1",
+        completionMentionSent: true,
+      });
+      await store.markDiscordRequestedCodexSession("session-1", {
+        discordChannelId: "thread-1",
+      });
+
+      const request = (await store.read()).discordRequestedCodexSessionRequests[0];
+      expect(request).toMatchObject({
+        sessionId: "session-1",
+        discordChannelId: "thread-1",
+        baselineTaskCompleteEventKey: "complete-1",
+      });
+      expect(request).not.toHaveProperty("completionMentionSent");
+      expect(request).not.toHaveProperty("completionMentionSentAt");
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

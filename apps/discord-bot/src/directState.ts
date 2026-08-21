@@ -91,7 +91,9 @@ export interface DiscordRequestedCodexSessionState {
   sessionId: string;
   requestedAt: string;
   discordChannelId?: string | null;
+  baselineTaskCompleteEventKey?: string | null;
   completionMentionSent?: boolean;
+  completionMentionSentAt?: string | null;
 }
 
 export interface DirectSyncState {
@@ -292,6 +294,20 @@ function normalizeDirectSyncState(state: Partial<DirectSyncState>): DirectSyncSt
                     : {}),
                   ...((request as DiscordRequestedCodexSessionState).completionMentionSent === true
                     ? { completionMentionSent: true }
+                    : {}),
+                  ...(typeof (request as DiscordRequestedCodexSessionState).baselineTaskCompleteEventKey === "string" &&
+                  (request as DiscordRequestedCodexSessionState).baselineTaskCompleteEventKey?.trim()
+                    ? {
+                        baselineTaskCompleteEventKey:
+                          (request as DiscordRequestedCodexSessionState).baselineTaskCompleteEventKey?.trim(),
+                      }
+                    : {}),
+                  ...(typeof (request as DiscordRequestedCodexSessionState).completionMentionSentAt === "string" &&
+                  (request as DiscordRequestedCodexSessionState).completionMentionSentAt?.trim()
+                    ? {
+                        completionMentionSentAt:
+                          (request as DiscordRequestedCodexSessionState).completionMentionSentAt?.trim(),
+                      }
                     : {}),
                 },
               ]),
@@ -587,6 +603,11 @@ export function createDirectSyncStateStore(statePath = defaultDirectSyncStatePat
         const existingRequest = state.discordRequestedCodexSessionRequests.find(
           (request) => request.sessionId === normalizedSessionId,
         );
+        const startingNewRequest = !options?.completionMentionSent && existingRequest?.completionMentionSent === true;
+        const requestState = startingNewRequest ? null : existingRequest;
+        const baselineTaskCompleteEventKey = state.taskCompletionNotifications.find(
+          (notification) => notification.sessionId.trim().toLowerCase() === normalizedSessionId,
+        )?.lastTaskCompleteEventKey ?? null;
         const linkedChannels = state.sessionChannels.filter(
           (channel) => channel.codexSessionId?.trim().toLowerCase() === normalizedSessionId,
         );
@@ -594,21 +615,21 @@ export function createDirectSyncStateStore(statePath = defaultDirectSyncStatePat
         const linkedChannelIds = new Set(linkedChannels.map((channel) => channel.discordChannelId));
         const canonicalLinkedChannelId = linkedChannels.length === 1
           ? linkedChannels[0]?.discordChannelId ?? null
-          : existingRequest?.discordChannelId && linkedChannelIds.has(existingRequest.discordChannelId)
-            ? existingRequest.discordChannelId
+          : requestState?.discordChannelId && linkedChannelIds.has(requestState.discordChannelId)
+            ? requestState.discordChannelId
             : requestedChannelId && linkedChannelIds.has(requestedChannelId)
               ? requestedChannelId
               : null;
         const discordChannelId =
           canonicalLinkedChannelId ||
-          existingRequest?.discordChannelId ||
+          requestState?.discordChannelId ||
           requestedChannelId ||
           null;
 
         if (
-          existingRequest &&
-          (!options?.completionMentionSent || existingRequest.completionMentionSent) &&
-          discordChannelId === (existingRequest.discordChannelId ?? null)
+          requestState &&
+          !options?.completionMentionSent &&
+          discordChannelId === (requestState.discordChannelId ?? null)
         ) {
           return state;
         }
@@ -622,11 +643,22 @@ export function createDirectSyncStateStore(statePath = defaultDirectSyncStatePat
             ),
             {
               sessionId: normalizedSessionId,
-              requestedAt: existingRequest?.requestedAt ?? new Date().toISOString(),
+              requestedAt: requestState?.requestedAt ?? new Date().toISOString(),
               ...(discordChannelId ? { discordChannelId } : {}),
-              ...(options?.completionMentionSent || existingRequest?.completionMentionSent
+              ...((requestState?.baselineTaskCompleteEventKey ?? baselineTaskCompleteEventKey)
+                ? {
+                    baselineTaskCompleteEventKey:
+                      requestState?.baselineTaskCompleteEventKey ?? baselineTaskCompleteEventKey,
+                  }
+                : {}),
+              ...(options?.completionMentionSent || requestState?.completionMentionSent
                 ? { completionMentionSent: true }
                 : {}),
+              ...(options?.completionMentionSent
+                ? { completionMentionSentAt: new Date().toISOString() }
+                : requestState?.completionMentionSentAt
+                  ? { completionMentionSentAt: requestState.completionMentionSentAt }
+                  : {}),
             },
           ],
         };

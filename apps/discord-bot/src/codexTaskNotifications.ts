@@ -1,4 +1,7 @@
-import type { DiscoveredCodexSession } from "../../../packages/codex-adapter/src/index.js";
+import type {
+  CodexSessionRealtimeEvent,
+  DiscoveredCodexSession,
+} from "../../../packages/codex-adapter/src/index.js";
 import type { ControlApiClient } from "./controlApiClient.js";
 import { prepareAgentCompletionAnswer } from "./agentCompletionAnswer.js";
 import {
@@ -12,6 +15,7 @@ import type {
   CodexTaskCompletionNotificationState,
   DirectSyncState,
   DirectSyncStateStore,
+  DiscordRequestedCodexSessionState,
   SyncedSessionChannelState,
 } from "./directState.js";
 import {
@@ -56,12 +60,58 @@ function sanitizeInline(value: string | null | undefined): string {
     .slice(0, MAX_FIELD_CHARS);
 }
 
-function latestTaskCompleteEvent(session: DiscoveredCodexSession): { key: string } | null {
+function latestTaskCompleteEvent(session: DiscoveredCodexSession): CodexSessionRealtimeEvent | null {
   return (
     session.realtimeEvents
       ?.filter((event) => event.kind === "status" && event.text === "작업 완료")
       .at(-1) ?? null
   );
+}
+
+type DiscordRequestCompletionRelation = "none" | "before" | "current" | "after";
+
+function timestampMs(value: string | null | undefined): number | null {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function discordRequestCompletionRelation(input: {
+  request: DiscordRequestedCodexSessionState | undefined;
+  completionEvent: CodexSessionRealtimeEvent;
+  session: DiscoveredCodexSession;
+}): DiscordRequestCompletionRelation {
+  const { request, completionEvent, session } = input;
+
+  if (!request) {
+    return "none";
+  }
+
+  if (request.baselineTaskCompleteEventKey === completionEvent.key) {
+    return "before";
+  }
+
+  const eventTimestamp = timestampMs(completionEvent.timestamp);
+  const requestedAt = timestampMs(request.requestedAt);
+
+  if (eventTimestamp !== null && requestedAt !== null && eventTimestamp < requestedAt) {
+    return "before";
+  }
+
+  if (!request.completionMentionSent) {
+    return "current";
+  }
+
+  const completionMentionSentAt = timestampMs(request.completionMentionSentAt);
+
+  if (completionMentionSentAt === null) {
+    return "after";
+  }
+
+  const completionTimestamp = eventTimestamp ?? timestampMs(session.updatedAt);
+
+  return completionTimestamp !== null && completionTimestamp > completionMentionSentAt
+    ? "after"
+    : "current";
 }
 
 function normalizedSessionId(sessionId: string): string {
@@ -360,7 +410,13 @@ export async function notifyCodexTaskCompletions(
     seenCompletionEvents.add(completionEventKey);
 
     const previous = notificationsBySession.get(sessionKey);
-    const discordRequest = discordRequestedSessions.get(sessionKey);
+    const pendingDiscordRequest = discordRequestedSessions.get(sessionKey);
+    const requestRelation = discordRequestCompletionRelation({
+      request: pendingDiscordRequest,
+      completionEvent,
+      session,
+    });
+    const discordRequest = requestRelation === "current" ? pendingDiscordRequest : undefined;
     const requestedChannel = discordRequest?.discordChannelId
       ? state.sessionChannels.find(
           (channel) => channel.discordChannelId === discordRequest.discordChannelId,
@@ -392,7 +448,10 @@ export async function notifyCodexTaskCompletions(
     }
 
     if (previous?.lastTaskCompleteEventKey === completionEvent.key) {
-      if (discordRequestedSessions.delete(sessionKey)) {
+      if (
+        requestRelation !== "before" &&
+        discordRequestedSessions.delete(sessionKey)
+      ) {
         consumedDiscordRequestSessionIds.add(sessionKey);
         changed = true;
       }
@@ -402,17 +461,6 @@ export async function notifyCodexTaskCompletions(
     const omitAnswerForDiscordRequest = Boolean(discordRequest);
     const completionMentionAlreadySent = discordRequest?.completionMentionSent === true;
     const intermediate = hasIncompleteGoal(session);
-
-    notificationsBySession.set(
-      sessionKey,
-      nextNotificationState({
-        session,
-        eventKey: completionEvent.key,
-        notifiedAt: completionMentionAlreadySent ? now : null,
-      }),
-    );
-    updatedNotificationSessionIds.add(sessionKey);
-    changed = true;
 
     if (initialized && input.guild.sendTextMessage && !completionMentionAlreadySent) {
       await persistState();
@@ -461,9 +509,20 @@ export async function notifyCodexTaskCompletions(
       );
       updatedNotificationSessionIds.add(sessionKey);
       changed = true;
+    } else {
+      notificationsBySession.set(
+        sessionKey,
+        nextNotificationState({
+          session,
+          eventKey: completionEvent.key,
+          notifiedAt: completionMentionAlreadySent ? now : null,
+        }),
+      );
+      updatedNotificationSessionIds.add(sessionKey);
+      changed = true;
     }
 
-    if (omitAnswerForDiscordRequest) {
+    if (requestRelation === "current" || requestRelation === "after") {
       discordRequestedSessions.delete(sessionKey);
       consumedDiscordRequestSessionIds.add(sessionKey);
       changed = true;

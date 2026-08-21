@@ -372,6 +372,7 @@ describe("codex parser", () => {
     await fs.appendFile(
       sessionFile,
       JSON.stringify({
+        timestamp: "2026-04-24T01:16:00.000Z",
         type: "event_msg",
         payload: { type: "task_complete" },
       }) + "\n",
@@ -389,7 +390,10 @@ describe("codex parser", () => {
         cwdHint: "/Users/me/project",
         realtimeEvents: [
           expect.objectContaining({ text: "작업 시작" }),
-          expect.objectContaining({ text: "작업 완료" }),
+          expect.objectContaining({
+            text: "작업 완료",
+            timestamp: "2026-04-24T01:16:00.000Z",
+          }),
         ],
       }),
     ]);

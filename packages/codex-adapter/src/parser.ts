@@ -56,6 +56,7 @@ export interface CodexSessionRealtimeEvent {
   kind: "user" | "assistant" | "status";
   text: string;
   phase?: "commentary" | "final_answer";
+  timestamp?: string;
 }
 
 interface CodexThreadState {
@@ -937,6 +938,7 @@ function parseContextMessageLine(line: string, messageMaxChars: number): CodexSe
 function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSessionRealtimeEvent | null {
   let parsed:
     | {
+        timestamp?: string;
         type?: string;
         payload?: {
           type?: string;
@@ -951,6 +953,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
 
   try {
     parsed = JSON.parse(line) as {
+      timestamp?: string;
       type?: string;
       payload?: {
         type?: string;
@@ -969,6 +972,10 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
     return null;
   }
 
+  const timestamp = typeof parsed.timestamp === "string" && parsed.timestamp.length > 0
+    ? parsed.timestamp
+    : null;
+
   if (parsed.type === "response_item" && parsed.payload.type === "message") {
     if (parsed.payload.role === "user") {
       const text = normalizeUserContextText(extractContentText(parsed.payload.content));
@@ -978,6 +985,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
             key: hashSessionEventLine(line),
             kind: "user",
             text: truncateContextText(text, messageMaxChars),
+            ...(timestamp ? { timestamp } : {}),
           }
         : null;
     }
@@ -994,6 +1002,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
             kind: "assistant",
             text: truncateContextText(text, messageMaxChars),
             ...(phase ? { phase } : {}),
+            ...(timestamp ? { timestamp } : {}),
           }
         : null;
     }
@@ -1013,6 +1022,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
           key: hashSessionEventLine(line),
           kind: "status",
           text: truncateContextText(statusText, messageMaxChars),
+          ...(timestamp ? { timestamp } : {}),
         }
       : null;
   }
@@ -1022,6 +1032,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
       key: hashSessionEventLine(line),
       kind: "status",
       text: "작업 시작",
+      ...(timestamp ? { timestamp } : {}),
     };
   }
 
@@ -1030,6 +1041,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
       key: hashSessionEventLine(line),
       kind: "status",
       text: "작업 완료",
+      ...(timestamp ? { timestamp } : {}),
     };
   }
 
