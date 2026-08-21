@@ -37,7 +37,11 @@ describe("workspace guard", () => {
 
     try {
       await fs.mkdir(path.join(workspaceRoot, "linked"), { recursive: true });
-      await fs.symlink(outsideRoot, path.join(workspaceRoot, "linked", "outside"));
+      await fs.symlink(
+        outsideRoot,
+        path.join(workspaceRoot, "linked", "outside"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
 
       expect(() => assertInsideWorkspace(workspaceRoot, path.join(workspaceRoot, "linked", "outside"))).toThrow(
         "Path escapes workspace root",

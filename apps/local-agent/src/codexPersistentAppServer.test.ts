@@ -1,8 +1,9 @@
 import { createRequire } from "node:module";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeNodeTestExecutable } from "../test/testExecutable.js";
 import {
   codexPersistentAppServerCount,
   disposeCodexPersistentAppServers,
@@ -33,7 +34,7 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
   const compactClosesEarly = options.compactClosesEarly ?? false;
   const threadId = options.threadId ?? "thread-persist-1";
 
-  await writeFile(
+  await writeNodeTestExecutable(
     fakeCodex,
     [
       "#!/usr/bin/env node",
@@ -91,7 +92,6 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
     ].join("\n"),
     "utf8",
   );
-  await chmod(fakeCodex, 0o755);
 
   return { fakeCodex, spawnsPath, methodsPath };
 }

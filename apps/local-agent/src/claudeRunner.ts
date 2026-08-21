@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { buildCommandInvocation } from "./windowsCommand.js";
 
 export type ClaudeRunnerProgressEvent =
   | { type: "thread-started"; sessionId: string }
@@ -574,9 +575,10 @@ class PersistentClaudeSession {
     this.claudeCommand = resolveClaudeCommand(input);
     this.baseInput = { ...input, onProgress: undefined, signal: undefined };
     this.model = input.model?.trim() || null;
-    this.child = spawn(this.claudeCommand, claudeArgs(input), {
+    const invocation = buildCommandInvocation(this.claudeCommand, claudeArgs(input));
+    this.child = spawn(invocation.command, invocation.args, {
       cwd: input.cwd,
-      env: process.env,
+      env: { ...process.env, ...invocation.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1290,9 +1292,10 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
   }
 
   return new Promise<RunClaudePromptResult>((resolve) => {
-    const child = spawn(claudeCommand, args, {
+    const invocation = buildCommandInvocation(claudeCommand, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: input.cwd,
-      env: process.env,
+      env: { ...process.env, ...invocation.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let settled = false;

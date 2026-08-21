@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { buildCommandInvocation } from "./windowsCommand.js";
 import { mkdir, mkdtemp, readlink, rm, stat, symlink, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
@@ -739,9 +740,11 @@ async function startAppServer(input: RunCodexAppServerPromptInput, transport: Ap
 
   const codexCommand = resolveCodexCommand(input);
   const stderrChunks: Buffer[] = [];
-  const child = spawn(codexCommand, ["app-server", "--listen", transport.listenUrl], {
+  const invocation = buildCommandInvocation(codexCommand, ["app-server", "--listen", transport.listenUrl]);
+  const child = spawn(invocation.command, invocation.args, {
     env: {
       ...process.env,
+      ...invocation.env,
       ...(input.codexHome ? { CODEX_HOME: input.codexHome } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],

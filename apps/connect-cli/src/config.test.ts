@@ -16,6 +16,9 @@ import {
   shouldRestartManagedProcess,
 } from "./index.js";
 
+const repoRoot = path.resolve("/repo");
+const operatorRoot = path.resolve("/operator/project");
+
 describe("connect setup config", () => {
   it("builds direct mode config with minimal operator inputs", () => {
     const config = buildDirectConfig({
@@ -24,7 +27,7 @@ describe("connect setup config", () => {
       channelId: "channel-1",
       claudeChannelId: "claude-channel-1",
       roleIds: "role-operator, role-admin",
-      workspaceRoot: "/repo",
+      workspaceRoot: repoRoot,
       workspaceDisplayName: "repo",
       computerId: "local-dev",
       computerDisplayName: "Local Dev",
@@ -42,8 +45,8 @@ describe("connect setup config", () => {
       direct: {
         computerId: "local-dev",
         computerDisplayName: "Local Dev",
-        workspaceId: "local-dev:/repo",
-        workspaceRoot: "/repo",
+        workspaceId: `local-dev:${repoRoot}`,
+        workspaceRoot: repoRoot,
         workspaceDisplayName: "repo",
         channelId: "channel-1",
         claudeChannelId: "claude-channel-1",
@@ -63,14 +66,14 @@ describe("connect setup config", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       roleIds: "role-operator",
-      workspaceRoot: "/repo",
-      initialCwd: "/repo/apps/web",
+      workspaceRoot: repoRoot,
+      initialCwd: path.join(repoRoot, "apps", "web"),
     });
 
     expect(config.direct).toMatchObject({
-      workspaceId: "local-dev:/repo",
-      workspaceRoot: "/repo",
-      initialCwd: "/repo/apps/web",
+      workspaceId: `local-dev:${repoRoot}`,
+      workspaceRoot: repoRoot,
+      initialCwd: path.join(repoRoot, "apps", "web"),
       workspaceDisplayName: "repo",
     });
   });
@@ -92,7 +95,7 @@ describe("connect setup config", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       roleIds: "role-operator",
-      workspaceRoot: "/repo",
+      workspaceRoot: repoRoot,
       locale: "english",
     });
 
@@ -109,7 +112,7 @@ describe("connect setup config", () => {
       channelId: "shared-channel",
       claudeChannelId: "shared-channel",
       roleIds: "role-operator",
-      workspaceRoot: "/repo",
+      workspaceRoot: repoRoot,
     })).toThrow("AI agent/admin channel ID and Claude Code channel ID must be different.");
   });
 
@@ -120,7 +123,7 @@ describe("connect setup config", () => {
       channelId: "channel-1",
       claudeChannelId: "claude-channel-1",
       roleIds: "role-operator",
-      workspaceRoot: "/repo",
+      workspaceRoot: repoRoot,
       maintenanceAgent: "claude",
     });
 
@@ -134,7 +137,7 @@ describe("connect setup config", () => {
       guildId: "guild-1",
       channelId: "channel-1",
       roleIds: "role-operator",
-      workspaceRoot: "/repo",
+      workspaceRoot: repoRoot,
       maintenanceAgent: "claude",
     })).toThrow("Claude maintenance requires a Claude Code channel ID.");
   });
@@ -157,15 +160,17 @@ describe("connect setup config", () => {
         '"mode": "hub"',
       );
       await expect(readFile(path.join(tempRoot, ".env"), "utf8")).resolves.toBe(renderEnvFile(config));
-      await expect(
-        stat(path.join(tempRoot, ".connect")).then((value) => value.mode & 0o777),
-      ).resolves.toBe(0o700);
-      await expect(
-        stat(path.join(tempRoot, ".connect", "config.json")).then((value) => value.mode & 0o777),
-      ).resolves.toBe(0o600);
-      await expect(
-        stat(path.join(tempRoot, ".env")).then((value) => value.mode & 0o777),
-      ).resolves.toBe(0o600);
+      if (process.platform !== "win32") {
+        await expect(
+          stat(path.join(tempRoot, ".connect")).then((value) => value.mode & 0o777),
+        ).resolves.toBe(0o700);
+        await expect(
+          stat(path.join(tempRoot, ".connect", "config.json")).then((value) => value.mode & 0o777),
+        ).resolves.toBe(0o600);
+        await expect(
+          stat(path.join(tempRoot, ".env")).then((value) => value.mode & 0o777),
+        ).resolves.toBe(0o600);
+      }
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -229,13 +234,13 @@ describe("connect setup config", () => {
   });
 
   it("keeps operator config and state paths rooted in the launch directory", () => {
-    expect(buildManagedProcessEnv("direct", "/operator/project", { EXISTING: "1" })).toMatchObject({
+    expect(buildManagedProcessEnv("direct", operatorRoot, { EXISTING: "1" })).toMatchObject({
       EXISTING: "1",
       CONNECT_MODE: "direct",
-      CONNECT_CONFIG_PATH: "/operator/project/.connect/config.json",
-      CONNECT_STATE_PATH: "/operator/project/.connect/state.json",
-      CONNECT_WORKER_ROOT: "/operator/project/.connect/worker",
-      CONNECT_DISCORD_QUEUE_ROOT: "/operator/project/.connect/discord-queue",
+      CONNECT_CONFIG_PATH: path.join(operatorRoot, ".connect", "config.json"),
+      CONNECT_STATE_PATH: path.join(operatorRoot, ".connect", "state.json"),
+      CONNECT_WORKER_ROOT: path.join(operatorRoot, ".connect", "worker"),
+      CONNECT_DISCORD_QUEUE_ROOT: path.join(operatorRoot, ".connect", "discord-queue"),
     });
   });
 });

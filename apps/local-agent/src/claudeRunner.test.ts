@@ -1,7 +1,8 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { writeNodeTestExecutable } from "../test/testExecutable.js";
 import {
   runClaudePrompt,
   steerActiveClaudeTurn,
@@ -39,7 +40,7 @@ describe("runClaudePrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeClaude,
         [
           "#!/usr/bin/env node",
@@ -53,7 +54,6 @@ describe("runClaudePrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeClaude, 0o755);
 
       await expect(
         runClaudePrompt({
@@ -144,7 +144,7 @@ describe("runClaudePrompt", () => {
     const events: unknown[] = [];
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeClaude,
         [
           "#!/usr/bin/env node",
@@ -154,7 +154,6 @@ describe("runClaudePrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeClaude, 0o755);
 
       await expect(
         runClaudePrompt({
@@ -189,7 +188,7 @@ describe("runClaudePrompt", () => {
     const argsPath = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeClaude,
         [
           "#!/usr/bin/env node",
@@ -220,7 +219,6 @@ describe("runClaudePrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeClaude, 0o755);
 
       const run = runClaudePrompt({
         workspaceRoot: tempRoot,
@@ -279,7 +277,7 @@ describe("runClaudePrompt", () => {
     const argsPath = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeClaude,
         [
           "#!/usr/bin/env node",
@@ -290,7 +288,6 @@ describe("runClaudePrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeClaude, 0o755);
 
       await expect(
         runClaudePrompt({
@@ -329,7 +326,7 @@ describe("runClaudePrompt", () => {
     const argsPath = path.join(tempRoot, "args.json");
 
     try {
-      await writeFile(
+      await writeNodeTestExecutable(
         fakeClaude,
         [
           "#!/usr/bin/env node",
@@ -339,7 +336,6 @@ describe("runClaudePrompt", () => {
         ].join("\n"),
         "utf8",
       );
-      await chmod(fakeClaude, 0o755);
 
       await runClaudePrompt({
         workspaceRoot: tempRoot,

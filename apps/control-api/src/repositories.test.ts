@@ -23,7 +23,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 process.env.DATABASE_URL = databaseUrl;
 closeSync(openSync(join(tempDatabaseDirectory, "test.sqlite"), "w"));
 
-execFileSync("pnpm", ["prisma", "db", "push", "--skip-generate"], {
+execFileSync(process.execPath, [
+  join(repoRoot, "node_modules", "prisma", "build", "index.js"),
+  "db",
+  "push",
+  "--skip-generate",
+], {
   cwd: repoRoot,
   env: { ...process.env, DATABASE_URL: databaseUrl },
   stdio: "pipe",
@@ -143,7 +148,7 @@ describe("repositories", () => {
     );
 
     await expect(channelContexts.findByDiscordChannelId("discord-channel-1")).resolves.toMatchObject({
-      cwd: "/Users/me/project/src",
+      cwd: resolve("/Users/me/project/src"),
     });
   });
 

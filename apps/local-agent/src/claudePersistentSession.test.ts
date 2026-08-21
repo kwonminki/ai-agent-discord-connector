@@ -1,7 +1,8 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeNodeTestExecutable } from "../test/testExecutable.js";
 import {
   claudePersistentSessionCount,
   disposeClaudePersistentSessions,
@@ -27,7 +28,7 @@ async function createPersistentFakeClaude(tempRoot: string, options: {
   const triggerPath = path.join(tempRoot, "fire-idle-turn");
   const usageTokens = options.usageTokens ?? 1_000;
 
-  await writeFile(
+  await writeNodeTestExecutable(
     fakeClaude,
     [
       "#!/usr/bin/env node",
@@ -58,7 +59,6 @@ async function createPersistentFakeClaude(tempRoot: string, options: {
     ].join("\n"),
     "utf8",
   );
-  await chmod(fakeClaude, 0o755);
 
   return { fakeClaude, spawnsPath, argsPath, inputsPath, triggerPath };
 }

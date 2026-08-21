@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeNodeTestExecutable } from "../test/testExecutable.js";
 import WebSocket, { WebSocketServer } from "ws";
 import { connectAgent, createAgentHelloMessage, handleAgentJob } from "./agentClient.js";
 
@@ -125,7 +126,7 @@ describe("agent client", () => {
         payload: {
           workspaceRoot,
           cwd: workspaceRoot,
-          command: "printf hello",
+          command: process.platform === "win32" ? "[Console]::Out.Write('hello')" : "printf hello",
           timeoutMs: 5_000,
           confirmedDangerous: false,
         },
@@ -155,7 +156,7 @@ describe("agent client", () => {
     cleanup.push(() => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
     cleanup.push(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
 
-    await fs.writeFile(
+    await writeNodeTestExecutable(
       fakeCodex,
       [
         "#!/usr/bin/env node",
@@ -167,7 +168,6 @@ describe("agent client", () => {
       ].join("\n"),
       "utf8",
     );
-    await fs.chmod(fakeCodex, 0o755);
 
     await serverReady;
     const address = server.address();
