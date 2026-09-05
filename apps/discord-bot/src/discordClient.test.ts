@@ -290,6 +290,7 @@ describe("attachDiscordMessageHandler", () => {
 
   it("creates threads and allows explicit role mentions for sent messages", async () => {
     const threadCreate = vi.fn().mockResolvedValue({ id: "thread-1" });
+    const addThreadMember = vi.fn().mockResolvedValue(undefined);
     const send = vi.fn().mockResolvedValue({ id: "message-1" });
     const guild = {
       channels: {
@@ -297,7 +298,7 @@ describe("attachDiscordMessageHandler", () => {
           Promise.resolve(
             channelId === "admin-channel"
               ? { threads: { create: threadCreate } }
-              : { send },
+              : { send, members: { add: addThreadMember } },
           ),
         ),
       },
@@ -317,6 +318,8 @@ describe("attachDiscordMessageHandler", () => {
         mentionRoleIds: ["operator-role"],
       }),
     ).resolves.toEqual({ id: "message-1" });
+    await expect(guildSurface?.addThreadMember?.("thread-1", "discord-user-1"))
+      .resolves.toBeUndefined();
 
     expect(threadCreate).toHaveBeenCalledWith({
       name: "session-thread",
@@ -328,6 +331,7 @@ describe("attachDiscordMessageHandler", () => {
       content: "<@&operator-role>\n작업 완료",
       embeds: [],
     });
+    expect(addThreadMember).toHaveBeenCalledWith("discord-user-1");
   });
 
   it("adds a durable answer copy button when sending a final answer", async () => {

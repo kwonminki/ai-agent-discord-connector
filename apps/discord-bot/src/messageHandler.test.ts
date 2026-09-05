@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -35,6 +35,58 @@ const claudeChannelContext: ManagedDiscordChannelContext = {
   channelMode: "claude-code",
   codexSessionId: null,
 };
+
+async function seedPublishedHarness(root: string) {
+  const harnessRoot = path.join(root, "harnesses");
+  await mkdir(harnessRoot, { recursive: true });
+  const published = {
+    harnessId: "safe-review",
+    harnessVersionId: "safe-review@1.0.0#abc123",
+    version: "1.0.0",
+    snapshotDigest: "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd",
+    snapshotPath: path.join(harnessRoot, "published", "safe-review", "1.0.0-abc123"),
+    manifest: {
+      id: "safe-review",
+      name: "safe-review",
+      description: "Review repository changes safely.",
+      version: "1.0.0",
+      providers: ["codex"],
+      maxSubagents: 0,
+      outputs: ["Review report"],
+    },
+    sourceBuildId: "published-build",
+    publishedAt: "2026-09-05T20:00:00.000Z",
+  };
+  await writeFile(path.join(harnessRoot, "state.json"), `${JSON.stringify({
+    version: 2,
+    builds: [{
+      buildId: "published-build",
+      status: "published",
+      provider: "codex",
+      sourceMode: "fresh",
+      goal: "Review safely",
+      sourceDiscordChannelId: null,
+      sourceAgentSessionId: null,
+      builderDiscordChannelId: "builder-thread",
+      builderAgentSessionId: "builder-session",
+      interviewTurnCount: 4,
+      interviewPhase: "ready",
+      interviewBrief: null,
+      reviewedInterviewDigest: null,
+      candidateInterviewDigest: null,
+      candidateDigest: published.snapshotDigest,
+      candidateManifest: published.manifest,
+      createdAt: "2026-09-05T19:00:00.000Z",
+      updatedAt: published.publishedAt,
+      publishedVersionId: published.harnessVersionId,
+      error: null,
+    }],
+    published: [published],
+    runs: [],
+    channelBindings: { "builder-thread": { kind: "builder", buildId: "published-build" } },
+  }, null, 2)}\n`);
+  return { harnessStore: createHarnessStore(harnessRoot), published };
+}
 
 describe("createDiscordMessageHandler", () => {
   it("uses a long Codex prompt timeout by default while allowing explicit override", () => {
@@ -3106,6 +3158,201 @@ describe("createDiscordMessageHandler", () => {
         error: null,
       });
       expect(JSON.stringify(reply.mock.calls)).toContain("자동으로 1회 수정해 복구했습니다");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("shows Harness roles and progress immediately while preserving a durable worker identity", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "discord-harness-progress-"));
+    const { harnessStore } = await seedPublishedHarness(tempRoot);
+    const createNewCodexChat = vi.fn().mockResolvedValue({
+      discordChannelId: "run-thread",
+      discordCategoryId: null,
+      channelName: "safe-review",
+      threadName: "Safe review run",
+      cwd: "/repo",
+      workspaceRoot: "/repo",
+      workspaceDisplayName: "repo",
+      pendingSession: true,
+      initialPrompt: null,
+      discordDeliveryMode: "thread",
+      channelMode: "session-linked",
+    });
+    const submitCodexPrompt = vi.fn(async (request) => {
+      await request.onProgress?.({ type: "thread-started", sessionId: "run-session" });
+      await request.onProgress?.({ type: "agent-message", text: "코드를 조사하고 회귀 테스트를 준비합니다." });
+      await request.onProgress?.({
+        type: "operation-progress",
+        label: "명령 실행 완료",
+        detail: "명령: pnpm test · 위치: /repo",
+        eventType: "item/completed",
+      });
+      return {
+        jobId: request.requestId,
+        result: {
+          status: "completed",
+          sessionId: "run-session",
+          finalMessage: "검토와 테스트를 완료했습니다.",
+        },
+      };
+    });
+    const sent: Array<{ channelId: string; content: unknown; id: string }> = [];
+    const edits: unknown[] = [];
+    const sendTextMessage = vi.fn(async (channelId, content) => {
+      const id = `sent-${sent.length + 1}`;
+      sent.push({ channelId, content, id });
+      return { id };
+    });
+    const editTextMessage = vi.fn(async (_channelId, _messageId, content) => {
+      edits.push(content);
+      return { id: "sent-1" };
+    });
+    const addThreadMember = vi.fn().mockResolvedValue(undefined);
+    const completeDurableRequest = vi.fn().mockResolvedValue(undefined);
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        discordDeliveryMode: "thread",
+        discordParentChannelId: "codex-parent",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      createNewCodexChat,
+      linkNewCodexSession: vi.fn().mockResolvedValue(undefined),
+      markDiscordRequestedCodexSession: vi.fn().mockResolvedValue(undefined),
+      completeDurableRequest,
+      harnessStore,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    try {
+      await handleMessage({
+        authorBot: false,
+        userId: "discord-user-1",
+        channelId: "builder-thread",
+        requestId: "durable-harness-run-1",
+        content: `__cdc_harness ${encodeURIComponent(JSON.stringify({
+          action: "publish-run",
+          source: "fresh",
+          prompt: "안전하게 검토해줘",
+        }))}`,
+        roleIds: ["role-operator"],
+        guild: {
+          createCategory: vi.fn(),
+          createTextChannel: vi.fn(),
+          sendTextMessage,
+          editTextMessage,
+          addThreadMember,
+        },
+        reply: vi.fn().mockResolvedValue({ edit: vi.fn().mockResolvedValue(undefined) }),
+      });
+
+      expect(addThreadMember).toHaveBeenCalledWith("run-thread", "discord-user-1");
+      expect(submitCodexPrompt).toHaveBeenCalledWith(expect.objectContaining({
+        requestId: "durable-harness-run-1",
+        queueKey: "run-thread",
+      }));
+      expect(String(sent[0]?.content)).toContain("조정자 · Codex");
+      expect(String(sent[0]?.content)).toContain("실행기 · 격리 Worker");
+      expect(sent.some((entry) => String(entry.content).includes("조정자 진행 보고"))).toBe(true);
+      expect(edits.some((content) => String(content).includes("현재 단계** · 검증"))).toBe(true);
+      expect(edits.at(-1)).toEqual(expect.stringContaining("Harness 완료"));
+      expect(await harnessStore.runForRequest("durable-harness-run-1")).toMatchObject({
+        status: "ready",
+        executionAgentSessionId: "run-session",
+        workerJobId: "durable-harness-run-1",
+        progressMessageId: "sent-1",
+        resultMessageId: "sent-3",
+      });
+      expect(completeDurableRequest).toHaveBeenCalledWith("durable-harness-run-1");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reattaches a restored Harness command to its existing thread and worker job", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "discord-harness-restore-"));
+    const { harnessStore } = await seedPublishedHarness(tempRoot);
+    const published = await harnessStore.resolvePublished("safe-review");
+    const existing = await harnessStore.createRun({
+      provider: "codex",
+      published: published!,
+      sourceMode: "fresh",
+      executionDiscordChannelId: "existing-run-thread",
+      requestId: "durable-harness-restore-1",
+    });
+    await harnessStore.markRunStatus(existing.runId, "running");
+    await harnessStore.updateRunExecution(existing.runId, { progressMessageId: "existing-progress" });
+    const createNewCodexChat = vi.fn();
+    const submitCodexPrompt = vi.fn().mockResolvedValue({
+      jobId: "durable-harness-restore-1",
+      result: {
+        status: "completed",
+        sessionId: "restored-session",
+        finalMessage: "재시작 뒤 보존된 결과입니다.",
+      },
+    });
+    const sendTextMessage = vi.fn().mockResolvedValue({ id: "restored-result" });
+    const editTextMessage = vi.fn().mockResolvedValue({ id: "existing-progress" });
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        discordDeliveryMode: "thread",
+        discordParentChannelId: "codex-parent",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      createNewCodexChat,
+      linkNewCodexSession: vi.fn().mockResolvedValue(undefined),
+      completeDurableRequest: vi.fn().mockResolvedValue(undefined),
+      harnessStore,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    try {
+      await handleMessage({
+        authorBot: false,
+        userId: "discord-user-1",
+        channelId: "builder-thread",
+        requestId: "durable-harness-restore-1",
+        restoreOnly: false,
+        content: `__cdc_harness ${encodeURIComponent(JSON.stringify({
+          action: "publish-run",
+          source: "fresh",
+        }))}`,
+        roleIds: ["role-operator"],
+        guild: {
+          createCategory: vi.fn(),
+          createTextChannel: vi.fn(),
+          sendTextMessage,
+          editTextMessage,
+          addThreadMember: vi.fn().mockResolvedValue(undefined),
+        },
+        reply: vi.fn().mockResolvedValue({ edit: vi.fn().mockResolvedValue(undefined) }),
+      });
+
+      expect(createNewCodexChat).not.toHaveBeenCalled();
+      expect(submitCodexPrompt).toHaveBeenCalledWith(expect.objectContaining({
+        requestId: "durable-harness-restore-1",
+        queueKey: "existing-run-thread",
+      }));
+      expect(sendTextMessage).toHaveBeenCalledWith(
+        "existing-run-thread",
+        expect.stringContaining("재시작 뒤 보존된 결과입니다"),
+        { mentionRoleIds: ["role-operator"] },
+      );
+      expect(editTextMessage).toHaveBeenLastCalledWith(
+        "existing-run-thread",
+        "existing-progress",
+        expect.stringContaining("Harness 완료"),
+      );
+      expect(await harnessStore.runForRequest("durable-harness-restore-1")).toMatchObject({
+        status: "ready",
+        resultMessageId: "restored-result",
+      });
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

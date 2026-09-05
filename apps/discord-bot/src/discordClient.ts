@@ -372,6 +372,17 @@ export function createDiscordGuildSurface(
         throw error;
       }
     },
+    async addThreadMember(threadId, userId) {
+      const channel = await guild.channels.fetch(threadId);
+      const members =
+        typeof channel === "object" && channel !== null && "members" in channel
+          ? (channel as { members?: { add?(id: string): Promise<unknown> } }).members
+          : null;
+      if (typeof members?.add !== "function") {
+        throw new Error("Discord channel does not support thread membership.");
+      }
+      await members.add(userId);
+    },
     async sendTextMessage(channelId, content, options) {
       const channel = await guild.channels.fetch(channelId);
       const sender = channel as { send?: (message: string | DiscordMessagePayload) => Promise<unknown> } | null;

@@ -136,6 +136,8 @@ The Builder link appears as soon as its Discord thread exists; that same status 
 
 This publishes an immutable exact version and digest, then opens a separate execution thread. Every later request in that thread receives the same snapshot. Use `/harness list`, `/harness status`, or `/harness run` to inspect and select published Harnesses. `/harness-help` displays the complete quick guide even in a channel without a linked agent session. Forking a Builder or execution thread preserves its Builder state or exact execution version in a separate agent session.
 
+The requester is added to the execution thread automatically. A persistent progress card shows the roles of the **Codex/Claude Code coordinator**, **isolated Worker**, and **Discord Gateway**, together with the active owner, stage, latest report, and command/edit/check counters. Meaningful Agent reports are also kept as separate timeline messages. If the Gateway restarts during a run, it reconnects to the same work using the persisted Discord request ID, Worker job ID, execution thread, and progress message ID instead of creating a duplicate run.
+
 ### Common commands
 
 | Command | Purpose |

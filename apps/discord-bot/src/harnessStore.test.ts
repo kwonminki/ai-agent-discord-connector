@@ -134,6 +134,48 @@ describe("harness store", () => {
     await expect(store.publishBuild(second.buildId)).rejects.toThrow(/이미 다른 내용/);
   });
 
+  it("persists worker and Discord delivery metadata for restart-safe runs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "harness-store-run-delivery-"));
+    roots.push(root);
+    const store = createHarnessStore(root);
+    const build = await store.createBuild({
+      provider: "codex",
+      sourceMode: "fresh",
+      builderDiscordChannelId: "builder-run-delivery",
+    });
+    const designDigest = await completeInterview(store, build.buildId);
+    await store.saveCandidate(build.buildId, validCandidate(), designDigest);
+    const published = await store.publishBuild(build.buildId);
+    const run = await store.createRun({
+      provider: "codex",
+      published,
+      sourceMode: "fresh",
+      executionDiscordChannelId: "run-thread",
+      requestId: "discord-request-1",
+    });
+
+    expect(run).toMatchObject({
+      requestId: "discord-request-1",
+      workerJobId: "discord-request-1",
+      progressMessageId: null,
+      resultMessageId: null,
+      progress: null,
+    });
+    await store.markRunStatus(run.runId, "running");
+    const bound = await store.bindRunSession(run.runId, "codex-session-1");
+    expect(bound.status).toBe("running");
+    await store.updateRunExecution(run.runId, {
+      progressMessageId: "progress-message-1",
+      resultMessageId: "result-message-1",
+    });
+
+    expect(await store.runForRequest("discord-request-1")).toMatchObject({
+      executionAgentSessionId: "codex-session-1",
+      progressMessageId: "progress-message-1",
+      resultMessageId: "result-message-1",
+    });
+  });
+
   it("refuses to publish a stale candidate after the latest candidate fails validation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "harness-store-invalid-latest-"));
     roots.push(root);

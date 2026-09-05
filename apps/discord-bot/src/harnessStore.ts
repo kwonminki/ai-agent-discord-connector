@@ -26,6 +26,7 @@ import {
   type HarnessWorkerBinding,
   type ValidatedHarnessCandidate,
 } from "../../../packages/core/src/index.js";
+import type { HarnessProgressState } from "./harnessProgress.js";
 
 export type HarnessBuildStatus =
   | "drafting"
@@ -85,6 +86,11 @@ export interface HarnessRunState {
   sourceAgentSessionId: string | null;
   executionDiscordChannelId: string;
   executionAgentSessionId: string | null;
+  requestId: string | null;
+  workerJobId: string | null;
+  progressMessageId: string | null;
+  resultMessageId: string | null;
+  progress: HarnessProgressState | null;
   createdAt: string;
   updatedAt: string;
   error: string | null;
@@ -139,9 +145,15 @@ export interface HarnessStore {
     sourceDiscordChannelId?: string | null;
     sourceAgentSessionId?: string | null;
     executionDiscordChannelId: string;
+    requestId?: string | null;
   }): Promise<HarnessRunState>;
   bindRunSession(runId: string, sessionId: string): Promise<HarnessRunState>;
   runForChannel(channelId: string): Promise<HarnessRunState | null>;
+  runForRequest(requestId: string): Promise<HarnessRunState | null>;
+  updateRunExecution(
+    runId: string,
+    patch: Partial<Pick<HarnessRunState, "workerJobId" | "progressMessageId" | "resultMessageId" | "progress">>,
+  ): Promise<HarnessRunState>;
   markRunStatus(runId: string, status: HarnessRunStatus, error?: string | null): Promise<void>;
   removeChannelBinding(channelId: string): Promise<boolean>;
   workerBinding(run: HarnessRunState): HarnessWorkerBinding;
@@ -176,6 +188,27 @@ function normalizeBuild(value: HarnessBuildState): HarnessBuildState {
   };
 }
 
+function normalizeRun(value: HarnessRunState): HarnessRunState {
+  return {
+    ...value,
+    requestId: typeof value.requestId === "string" && value.requestId.trim()
+      ? value.requestId.trim()
+      : null,
+    workerJobId: typeof value.workerJobId === "string" && value.workerJobId.trim()
+      ? value.workerJobId.trim()
+      : null,
+    progressMessageId: typeof value.progressMessageId === "string" && value.progressMessageId.trim()
+      ? value.progressMessageId.trim()
+      : null,
+    resultMessageId: typeof value.resultMessageId === "string" && value.resultMessageId.trim()
+      ? value.resultMessageId.trim()
+      : null,
+    progress: typeof value.progress === "object" && value.progress !== null
+      ? value.progress
+      : null,
+  };
+}
+
 function normalizeState(value: unknown): HarnessState {
   if (!value || typeof value !== "object") {
     return emptyState();
@@ -188,7 +221,7 @@ function normalizeState(value: unknown): HarnessState {
     version: 2,
     builds: Array.isArray(state.builds) ? state.builds.map(normalizeBuild) : [],
     published: Array.isArray(state.published) ? state.published : [],
-    runs: Array.isArray(state.runs) ? state.runs : [],
+    runs: Array.isArray(state.runs) ? state.runs.map(normalizeRun) : [],
     channelBindings: bindings,
   };
 }
@@ -718,6 +751,11 @@ export function createHarnessStore(rootPath = defaultHarnessRootPath()): Harness
           sourceAgentSessionId: input.sourceAgentSessionId?.trim() || null,
           executionDiscordChannelId: input.executionDiscordChannelId,
           executionAgentSessionId: null,
+          requestId: input.requestId?.trim() || null,
+          workerJobId: input.requestId?.trim() || null,
+          progressMessageId: null,
+          resultMessageId: null,
+          progress: null,
           createdAt: now,
           updatedAt: now,
           error: null,
@@ -741,7 +779,9 @@ export function createHarnessStore(rootPath = defaultHarnessRootPath()): Harness
           throw new Error("Execution Discord 스레드가 다른 agent session으로 바뀌어 실행을 중단했습니다.");
         }
         run.executionAgentSessionId = normalized;
-        run.status = "ready";
+        if (run.status === "provisioning") {
+          run.status = "ready";
+        }
         run.updatedAt = new Date().toISOString();
         return run;
       });
@@ -752,6 +792,34 @@ export function createHarnessStore(rootPath = defaultHarnessRootPath()): Harness
       return binding?.kind === "run"
         ? state.runs.find((run) => run.runId === binding.runId) ?? null
         : null;
+    },
+    async runForRequest(requestId) {
+      const normalized = requestId.trim();
+      if (!normalized) {
+        return null;
+      }
+      const state = await store.read();
+      return state.runs.find((run) => run.requestId === normalized) ?? null;
+    },
+    async updateRunExecution(runId, patch) {
+      return mutate((state) => {
+        const run = state.runs.find((entry) => entry.runId === runId);
+        if (!run) {
+          throw new Error(`하네스 run을 찾을 수 없습니다: ${runId}`);
+        }
+        for (const key of ["workerJobId", "progressMessageId", "resultMessageId"] as const) {
+          if (!(key in patch)) {
+            continue;
+          }
+          const value = patch[key];
+          run[key] = typeof value === "string" && value.trim() ? value.trim() : null;
+        }
+        if ("progress" in patch) {
+          run.progress = patch.progress ?? null;
+        }
+        run.updatedAt = new Date().toISOString();
+        return run;
+      });
     },
     async markRunStatus(runId, status, error) {
       await mutate((state) => {

@@ -28,6 +28,7 @@ import type {
   CodexPromptUserInputResponse,
   ControlApiJobResponse,
   ControlApiClient,
+  AgentPromptProgressEvent,
 } from "./controlApiClient.js";
 import type { TranscriptSyncMode } from "./directState.js";
 import type { DiscordIncomingAttachment, MaterializedDiscordAttachment } from "./incomingAttachments.js";
@@ -59,6 +60,13 @@ import type {
   HarnessStore,
   PublishedHarnessVersionState,
 } from "./harnessStore.js";
+import {
+  applyHarnessProgressEvent,
+  createHarnessProgressState,
+  formatHarnessProgress,
+  formatHarnessProgressReport,
+  type HarnessProgressState,
+} from "./harnessProgress.js";
 import type { DiscordMessagePayload } from "./responses.js";
 import { AGENT_PROGRESS_EVENT_LIMIT, isAgentQuestionMessage, withRoleMentions } from "./responses.js";
 import {
@@ -1375,6 +1383,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     sourceContext: ManagedDiscordChannelContext;
     build?: HarnessBuildState;
     run?: HarnessRunState;
+    runProgressReporter?: HarnessRunProgressReporter;
     userPrompt: string;
     reply: DiscordMessageLike["reply"];
     replyWithRoleMentions: DiscordMessageLike["reply"];
@@ -1429,12 +1438,29 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       await input.harnessStore?.markRunStatus(inputTurn.run.runId, "running");
     }
 
+    const handleProgress = async (event: AgentPromptProgressEvent) => {
+      if (event.type === "thread-started") {
+        streamedSessionId = event.sessionId;
+        if (inputTurn.run) {
+          await input.harnessStore?.bindRunSession(inputTurn.run.runId, event.sessionId);
+          await input.harnessStore?.markRunStatus(inputTurn.run.runId, "running");
+        }
+        if (inputTurn.provider === "codex") {
+          await input.markDiscordRequestedCodexSession?.(event.sessionId, {
+            discordChannelId: inputTurn.thread.discordChannelId,
+          });
+        }
+      }
+      await inputTurn.runProgressReporter?.publish(event);
+    };
+
     if (inputTurn.provider === "claude") {
       if (!input.submitClaudePrompt) {
         throw new Error("Claude Code is not connected for this bot mode.");
       }
       response = await input.submitClaudePrompt({
         computerId: inputTurn.sourceContext.computerId,
+        ...(inputTurn.run?.workerJobId ? { requestId: inputTurn.run.workerJobId } : {}),
         queueKey: inputTurn.thread.discordChannelId,
         payload: {
           workspaceRoot: inputTurn.thread.workspaceRoot,
@@ -1450,11 +1476,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           harnessBuilder: Boolean(inputTurn.build),
           ...(inputTurn.run ? { harness: input.harnessStore?.workerBinding(inputTurn.run) } : {}),
         },
-        onProgress: (event) => {
-          if (event.type === "thread-started") {
-            streamedSessionId = event.sessionId;
-          }
-        },
+        onProgress: handleProgress,
       });
     } else {
       if (!input.submitCodexPrompt) {
@@ -1462,6 +1484,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       }
       response = await input.submitCodexPrompt({
         computerId: inputTurn.sourceContext.computerId,
+        ...(inputTurn.run?.workerJobId ? { requestId: inputTurn.run.workerJobId } : {}),
         queueKey: inputTurn.thread.discordChannelId,
         payload: {
           workspaceRoot: inputTurn.thread.workspaceRoot,
@@ -1480,14 +1503,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           harnessBuilder: Boolean(inputTurn.build),
           ...(inputTurn.run ? { harness: input.harnessStore?.workerBinding(inputTurn.run) } : {}),
         },
-        onProgress: async (event) => {
-          if (event.type === "thread-started") {
-            streamedSessionId = event.sessionId;
-            await input.markDiscordRequestedCodexSession?.(event.sessionId, {
-              discordChannelId: inputTurn.thread.discordChannelId,
-            });
-          }
-        },
+        onProgress: handleProgress,
         onApprovalRequest: (request) =>
           requestCodexApproval(threadReplyWithRoleMentions, inputTurn.thread.discordChannelId, request),
         onUserInputRequest: (request) =>
@@ -1542,7 +1558,6 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
     if (inputTurn.run) {
       await input.harnessStore?.bindRunSession(inputTurn.run.runId, sessionId);
-      await input.harnessStore?.markRunStatus(inputTurn.run.runId, "ready");
     }
 
     let candidateNotice: string | null = null;
@@ -1658,30 +1673,77 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     const exactSourceSessionId = inputRun.sourceMode === "current"
       ? inputRun.sourceSessionId ?? currentSourceSessionId
       : null;
-    const thread = await createHarnessSessionThread({
-      message: inputRun.message,
-      context: sourceContext,
-      sourceMode: inputRun.sourceMode,
-      sourceChannelId,
-      sourceSessionId: exactSourceSessionId,
-      name: inputRun.name?.trim() || `🧰 ${inputRun.published.harnessId} ${inputRun.published.version}`,
-    });
-    let run: HarnessRunState | null = null;
+    const runName = inputRun.name?.trim() || `🧰 ${inputRun.published.harnessId} ${inputRun.published.version}`;
+    let run = inputRun.message.requestId
+      ? await input.harnessStore.runForRequest(inputRun.message.requestId)
+      : null;
+    if (run && run.harnessVersionId !== inputRun.published.harnessVersionId) {
+      throw new Error("같은 Discord 요청 ID가 다른 Harness 실행에 이미 사용되었습니다.");
+    }
+    if (run?.status === "ready" && run.resultMessageId) {
+      await inputRun.reply(`✅ 이미 완료된 하네스 실행입니다: <#${run.executionDiscordChannelId}>`);
+      return run;
+    }
+    if (run?.status === "failed" || run?.status === "interrupted") {
+      await inputRun.reply(
+        `⚠️ 이전 하네스 실행 상태를 복구했습니다: <#${run.executionDiscordChannelId}>\n` +
+        `상태: ${run.status}${run.error ? ` · ${run.error}` : ""}`,
+      );
+      return run;
+    }
+    const thread: NewCodexChatResult = run
+      ? {
+          discordChannelId: run.executionDiscordChannelId,
+          discordCategoryId: null,
+          channelName: runName,
+          threadName: runName,
+          cwd: sourceContext.cwd,
+          workspaceRoot: sourceContext.workspaceRoot,
+          workspaceDisplayName: sourceContext.workspaceDisplayName,
+          pendingSession: !run.executionAgentSessionId,
+          initialPrompt: null,
+          discordDeliveryMode: "thread",
+          channelMode: provider === "claude" ? "claude-code" : "session-linked",
+        }
+      : await createHarnessSessionThread({
+          message: inputRun.message,
+          context: sourceContext,
+          sourceMode: inputRun.sourceMode,
+          sourceChannelId,
+          sourceSessionId: exactSourceSessionId,
+          name: runName,
+        });
     let provisioningReply: DiscordReplyLike | void = undefined;
+    let progressReporter: HarnessRunProgressReporter | null = null;
 
     try {
-      run = await input.harnessStore.createRun({
-        provider,
-        published: inputRun.published,
-        sourceMode: inputRun.sourceMode,
-        sourceDiscordChannelId: inputRun.sourceMode === "current" ? sourceChannelId : null,
-        sourceAgentSessionId: exactSourceSessionId,
-        executionDiscordChannelId: thread.discordChannelId,
+      if (!run) {
+        run = await input.harnessStore.createRun({
+          provider,
+          published: inputRun.published,
+          sourceMode: inputRun.sourceMode,
+          sourceDiscordChannelId: inputRun.sourceMode === "current" ? sourceChannelId : null,
+          sourceAgentSessionId: exactSourceSessionId,
+          executionDiscordChannelId: thread.discordChannelId,
+          requestId: inputRun.message.requestId,
+        });
+      }
+      await inputRun.message.guild?.addThreadMember?.(
+        thread.discordChannelId,
+        inputRun.message.userId,
+      ).catch((error) => {
+        console.warn("discord-bot failed to add the Harness requester to the execution thread", error);
       });
       provisioningReply = await inputRun.reply(
-        `⏳ 하네스 실행 스레드를 만들었습니다: <#${thread.discordChannelId}>\n` +
-        "Agent session을 연결하고 있습니다. 실행 스레드에서 진행 상황을 바로 확인할 수 있습니다.",
+        `${run.progressMessageId ? "♻️ 하네스 실행을 다시 연결했습니다" : "⏳ 하네스 실행 스레드를 만들었습니다"}: ` +
+        `<#${thread.discordChannelId}>\n` +
+        "실행 스레드의 역할·현재 단계·진행 보고 카드에서 내부 작업을 확인할 수 있습니다.",
       );
+      progressReporter = createHarnessRunProgressReporter({
+        run,
+        guild: inputRun.message.guild!,
+      });
+      await progressReporter.start();
       const provisioned = await submitProvisionedHarnessTurn({
         provider,
         thread,
@@ -1691,15 +1753,25 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         forkSession: inputRun.sourceMode === "current",
         sourceContext,
         run,
+        runProgressReporter: progressReporter,
         userPrompt: inputRun.prompt ?? "",
         reply: inputRun.reply,
         replyWithRoleMentions: inputRun.replyWithRoleMentions,
       });
-      await inputRun.message.guild?.sendTextMessage?.(
-        thread.discordChannelId,
-        `${formatHarnessRunReady({ ...run, executionAgentSessionId: provisioned.sessionId, status: "ready" })}\n\n${provisioned.visibleMessage}`,
-        { mentionRoleIds: sourceContext.allowedRoleIds },
-      );
+      if (!run.resultMessageId) {
+        const resultMessage = await inputRun.message.guild?.sendTextMessage?.(
+          thread.discordChannelId,
+          `${formatHarnessRunReady({ ...run, executionAgentSessionId: provisioned.sessionId, status: "ready" })}\n\n${provisioned.visibleMessage}`,
+          { mentionRoleIds: sourceContext.allowedRoleIds },
+        );
+        if (resultMessage?.id) {
+          run = await input.harnessStore.updateRunExecution(run.runId, {
+            resultMessageId: resultMessage.id,
+          });
+        }
+      }
+      await progressReporter.finish("completed");
+      await input.harnessStore.markRunStatus(run.runId, "ready");
       await updateQueuedReply(
         provisioningReply,
         inputRun.reply,
@@ -1713,9 +1785,12 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           "failed",
           error instanceof Error ? error.message : String(error),
         );
-        await input.harnessStore.removeChannelBinding(thread.discordChannelId);
+        await progressReporter?.finish(
+          "failed",
+          error instanceof Error ? error.message : String(error),
+        );
       }
-      if (inputRun.message.guild && input.discardForkedSessionThread) {
+      if (!run && inputRun.message.guild && input.discardForkedSessionThread) {
         await input.discardForkedSessionThread({
           guild: inputRun.message.guild,
           discordChannelId: thread.discordChannelId,
@@ -1807,6 +1882,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           sourceDiscordChannelId: sourceMode === "current" ? message.channelId : null,
           sourceAgentSessionId: sourceSessionId,
           builderDiscordChannelId: thread.discordChannelId,
+        });
+        await message.guild?.addThreadMember?.(thread.discordChannelId, message.userId).catch((error) => {
+          console.warn("discord-bot failed to add the Harness requester to the Builder thread", error);
         });
         provisioningReply = await reply(
           `⏳ Harness Builder 스레드를 만들었습니다: <#${thread.discordChannelId}>\n` +
@@ -2277,6 +2355,134 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         }
 
         lastText = null;
+      },
+    };
+  }
+
+  interface HarnessRunProgressReporter {
+    start(): Promise<void>;
+    publish(event: AgentPromptProgressEvent): Promise<void>;
+    finish(status: "completed" | "failed", detail?: string | null): Promise<void>;
+  }
+
+  function createHarnessRunProgressReporter(inputReporter: {
+    run: HarnessRunState;
+    guild: DiscordGuildSurface;
+  }): HarnessRunProgressReporter {
+    let state: HarnessProgressState = inputReporter.run.progress ?? createHarnessProgressState({
+      provider: inputReporter.run.provider,
+      harnessVersionId: inputReporter.run.harnessVersionId,
+      runId: inputReporter.run.runId,
+      sessionId: inputReporter.run.executionAgentSessionId,
+    });
+    let messageId = inputReporter.run.progressMessageId;
+    let lastRenderedAt = 0;
+    let receivedEvent = false;
+
+    const persist = async () => {
+      await input.harnessStore?.updateRunExecution(inputReporter.run.runId, {
+        progressMessageId: messageId,
+        progress: state,
+      });
+    };
+
+    const render = async (
+      status: "running" | "completed" | "failed" = "running",
+      force = false,
+    ) => {
+      const now = Date.now();
+      if (!force && now - lastRenderedAt < 15_000) {
+        return;
+      }
+      const content = formatHarnessProgress(state, status);
+      if (messageId && inputReporter.guild.editTextMessage) {
+        try {
+          await inputReporter.guild.editTextMessage(
+            inputReporter.run.executionDiscordChannelId,
+            messageId,
+            content,
+          );
+          lastRenderedAt = now;
+          await persist();
+          return;
+        } catch (error) {
+          console.warn("discord-bot failed to edit Harness progress card; creating a replacement", error);
+          messageId = null;
+        }
+      }
+      if (!inputReporter.guild.sendTextMessage) {
+        return;
+      }
+      const sent = await inputReporter.guild.sendTextMessage(
+        inputReporter.run.executionDiscordChannelId,
+        content,
+      );
+      messageId = sent?.id ?? null;
+      lastRenderedAt = now;
+      await persist();
+    };
+
+    const sendReport = async (report: string) => {
+      if (!inputReporter.guild.sendTextMessage) {
+        return;
+      }
+      const chunks = splitDiscordMessageContent(
+        formatHarnessProgressReport({ provider: state.provider, report }),
+        LIVE_PROGRESS_CHUNK_LENGTH,
+      );
+      for (const chunk of chunks) {
+        await inputReporter.guild.sendTextMessage(
+          inputReporter.run.executionDiscordChannelId,
+          chunk,
+        );
+      }
+    };
+
+    return {
+      async start() {
+        // A restored Gateway reuses the existing card and its persisted counters.
+        // A fresh run creates the card before waiting for the worker.
+        if (!messageId) {
+          await render("running", true);
+        }
+      },
+      async publish(event) {
+        receivedEvent = true;
+        const update = applyHarnessProgressEvent(state, event);
+        state = update.state;
+        if (update.report) {
+          try {
+            await sendReport(update.report);
+          } catch (error) {
+            console.warn("discord-bot failed to post Harness coordinator progress", error);
+          }
+        }
+        try {
+          await render("running", update.significant);
+        } catch (error) {
+          console.warn("discord-bot failed to update Harness progress", error);
+        }
+      },
+      async finish(status, detail) {
+        // When a Gateway resumes after the worker has already finished, keep the
+        // persisted counters instead of replacing them with a fresh empty card.
+        if (!receivedEvent && inputReporter.run.progress) {
+          state = inputReporter.run.progress;
+        }
+        state = {
+          ...state,
+          stage: status === "completed" ? "완료" : "실패",
+          activeRole: "gateway",
+          activeDetail: detail?.trim() || (status === "completed"
+            ? "최종 결과를 Discord에 전달했습니다."
+            : "실패 내용을 보존하고 Discord에 전달했습니다."),
+          updatedAt: new Date().toISOString(),
+        };
+        try {
+          await render(status, true);
+        } catch (error) {
+          console.warn("discord-bot failed to finalize Harness progress", error);
+        }
       },
     };
   }
@@ -3478,10 +3684,17 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         claudeSessionIdsByChannel.get(message.channelId) ?? channelContext.claudeSessionId ?? null;
       let sessionBindingError: Error | null = null;
       const progressReporter = createLiveProgressReporter({ message, channelContext, agentLabel: "Claude Code" });
+      const harnessProgressReporter = harnessRun && message.guild
+        ? createHarnessRunProgressReporter({ run: harnessRun, guild: message.guild })
+        : null;
+      const publishProgress = (event: AgentPromptProgressEvent) => harnessProgressReporter
+        ? harnessProgressReporter.publish(event)
+        : progressReporter.publish(event);
 
       try {
         if (harnessRun) {
           await input.harnessStore?.markRunStatus(harnessRun.runId, "running");
+          await harnessProgressReporter?.start();
         }
         const response = await input.submitClaudePrompt({
           computerId: channelContext.computerId,
@@ -3519,6 +3732,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                 return;
               }
 
+              await publishProgress(event);
               recentEvents = appendProgressEvent(recentEvents, "생각중...");
               await updateQueuedReply(
                 queuedReply,
@@ -3556,7 +3770,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                   ? "생각 중"
                   : event.type;
             recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
-            await progressReporter.publish(event);
+            await publishProgress(event);
             await updateQueuedReply(
               queuedReply,
               (replyMessage) => reply(replyMessage),
@@ -3642,6 +3856,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           terminalPayload: formatAgentResultPosted({ agentLabel: "Claude Code", failed: responseFailed }),
           questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
         });
+        await harnessProgressReporter?.finish(
+          responseFailed ? "failed" : "completed",
+          responseFailed ? extractAgentResponseFinalMessage(responseForDisplay) : null,
+        );
         if (harnessNotice && harnessBuild) {
           const latestBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? harnessBuild;
           await reply(formatHarnessBuilderNotice(harnessNotice, latestBuild));
@@ -3664,6 +3882,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       } catch (error) {
         await progressReporter.finish();
         const messageText = error instanceof Error ? error.message : "Claude Code prompt failed";
+        await harnessProgressReporter?.finish("failed", messageText);
         if (harnessRun) {
           await input.harnessStore?.markRunStatus(harnessRun.runId, "failed", messageText);
         }
@@ -3748,10 +3967,17 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       let recentEvents: string[] = [];
       let latestAgentMessage: string | null = null;
       const progressReporter = createLiveProgressReporter({ message, channelContext, agentLabel: "Codex" });
+      const harnessProgressReporter = harnessRun && message.guild
+        ? createHarnessRunProgressReporter({ run: harnessRun, guild: message.guild })
+        : null;
+      const publishProgress = (event: AgentPromptProgressEvent) => harnessProgressReporter
+        ? harnessProgressReporter.publish(event)
+        : progressReporter.publish(event);
 
       try {
         if (harnessRun) {
           await input.harnessStore?.markRunStatus(harnessRun.runId, "running");
+          await harnessProgressReporter?.start();
         }
         if (
           channelContext.channelMode === "session-linked" &&
@@ -3826,6 +4052,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                 input.setSessionStreaming(streamedSessionId, true);
                 activeStreamingSessionIds.add(streamedSessionId);
               }
+              await publishProgress(event);
               await updateQueuedReply(
                 queuedReply,
                 (replyMessage) => reply(replyMessage),
@@ -3856,7 +4083,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                 return;
               }
               recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
-              await progressReporter.publish(event);
+              await publishProgress(event);
               await updateQueuedReply(
                 queuedReply,
                 (replyMessage) => reply(replyMessage),
@@ -3872,7 +4099,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
             if (event.type === "operation-progress") {
               recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
-              await progressReporter.publish(event);
+              await publishProgress(event);
               await updateQueuedReply(
                 queuedReply,
                 (replyMessage) => reply(replyMessage),
@@ -3887,7 +4114,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             }
 
             recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
-            await progressReporter.publish(event);
+            await publishProgress(event);
             await updateQueuedReply(
               queuedReply,
               (replyMessage) => reply(replyMessage),
@@ -4009,6 +4236,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }),
           questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
         });
+        await harnessProgressReporter?.finish(
+          responseFailed ? "failed" : "completed",
+          responseFailed ? extractAgentResponseFinalMessage(responseForDisplay) : null,
+        );
         if (harnessNotice && harnessBuild) {
           const latestBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? harnessBuild;
           await reply(formatHarnessBuilderNotice(harnessNotice, latestBuild));
@@ -4044,6 +4275,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         }
       } catch (error) {
         await progressReporter.finish();
+        await harnessProgressReporter?.finish(
+          "failed",
+          error instanceof Error ? error.message : "Codex prompt failed",
+        );
         if (
           channelContext.channelMode === "session-linked" &&
           input.syncTranscriptUpdates &&
@@ -4464,7 +4699,8 @@ function isDurableAgentRequest(type: string): boolean {
     type === "codex-chat" ||
     type === "codex-continue-session" ||
     type === "codex-review" ||
-    type === "claude-chat";
+    type === "claude-chat" ||
+    type === "harness-command";
 }
 
 function acceptsIncomingAttachments(type: string): boolean {
