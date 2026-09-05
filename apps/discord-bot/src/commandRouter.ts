@@ -19,12 +19,22 @@ export interface RouteDiscordMessageInput {
   locale?: ConnectorLocale;
 }
 
+export interface HarnessCommandRequest {
+  action: "create" | "publish" | "publish-run" | "run" | "status" | "list" | "leave" | "cancel";
+  source: "current" | "fresh" | null;
+  name: string | null;
+  harnessId: string | null;
+  version: string | null;
+  prompt: string | null;
+}
+
 export type RoutedDiscordMessage =
   | { type: "execute-command"; command: string; confirmedDangerous: boolean }
   | { type: "codex-chat"; content: string }
   | { type: "codex-continue-session"; sessionId: string; content: string }
   | { type: "claude-chat"; content: string }
   | { type: "fork-session"; name: string }
+  | { type: "harness-command"; request: HarnessCommandRequest }
   | { type: "queue-status" }
   | { type: "queue-prompt"; content: string }
   | { type: "queue-clear" }
@@ -497,6 +507,42 @@ function parseEncodedForkSessionCommand(content: string): { name: string } | nul
     };
     const name = typeof parsed.name === "string" ? parsed.name.trim() : "";
     return name.length > 0 ? { name } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseEncodedHarnessCommand(content: string): HarnessCommandRequest | null {
+  if (!content.startsWith("__cdc_harness ")) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decodeURIComponent(content.slice("__cdc_harness ".length).trim())) as {
+      action?: unknown;
+      source?: unknown;
+      name?: unknown;
+      harnessId?: unknown;
+      version?: unknown;
+      prompt?: unknown;
+    };
+    const actions = new Set<HarnessCommandRequest["action"]>([
+      "create", "publish", "publish-run", "run", "status", "list", "leave", "cancel",
+    ]);
+    const action = typeof parsed.action === "string"
+      ? parsed.action.trim().toLowerCase() as HarnessCommandRequest["action"]
+      : "status";
+    if (!actions.has(action)) {
+      return null;
+    }
+    return {
+      action,
+      source: parsed.source === "fresh" ? "fresh" : parsed.source === "current" ? "current" : null,
+      name: typeof parsed.name === "string" ? parsed.name.trim() || null : null,
+      harnessId: typeof parsed.harnessId === "string" ? parsed.harnessId.trim().toLowerCase() || null : null,
+      version: typeof parsed.version === "string" ? parsed.version.trim() || null : null,
+      prompt: typeof parsed.prompt === "string" ? parsed.prompt.trim() || null : null,
+    };
   } catch {
     return null;
   }
@@ -998,6 +1044,12 @@ export function routeDiscordMessage(input: RouteDiscordMessageInput): RoutedDisc
 
   if (trimmedContent === "help" || trimmedContent === "!help" || trimmedContent === "?") {
     return { type: "bot-help" };
+  }
+
+  const harnessCommand = parseEncodedHarnessCommand(trimmedContent);
+  if (harnessCommand) {
+    const denied = authorizationDenied(input);
+    return denied ?? { type: "harness-command", request: harnessCommand };
   }
 
   const componentShellCommand = parseComponentShellCommand(trimmedContent);

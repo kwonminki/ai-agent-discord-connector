@@ -63,6 +63,7 @@ import {
 } from "./discordClient.js";
 import { createDiscordMessageHandler } from "./messageHandler.js";
 import type { BotReloadExecutionState, DiscordOutgoingMessage } from "./messageHandler.js";
+import { createHarnessStore } from "./harnessStore.js";
 import {
   loadCodexModelChoices,
   modelAutocompleteChoices,
@@ -128,6 +129,13 @@ function resolveBoundedInteger(value: string | undefined, fallback: number, min:
 
 function identifierList(value: string | undefined): string[] {
   return [...new Set((value ?? "").split(",").map((entry) => entry.trim()).filter(Boolean))];
+}
+
+function featureEnabled(value: string | undefined, defaultValue = true): boolean {
+  if (value === undefined || value.trim() === "") {
+    return defaultValue;
+  }
+  return !["0", "false", "off", "no"].includes(value.trim().toLowerCase());
 }
 
 let packageVersionPromise: Promise<string> | null = null;
@@ -316,6 +324,10 @@ export async function startBot(): Promise<void> {
   const incomingAttachmentStore = connectConfig?.mode === "direct" ? createIncomingAttachmentStore() : null;
   const relayPresenceStore = connectConfig?.mode === "direct" ? createAgentRelayPresenceStore() : null;
   const answerCopyStore = createAnswerCopyStore();
+  const harnessStore =
+    connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_HARNESS_ENABLED)
+      ? createHarnessStore()
+      : undefined;
   const activelyStreamedSessionIds = new Set<string>();
   let connectorMaintenanceThreadPromise: Promise<ConnectorMaintenanceThreadResult> | null = null;
 
@@ -723,6 +735,7 @@ export async function startBot(): Promise<void> {
     submitCodexPrompt: controlApiClient.submitCodexPrompt,
     controlCodexTurn: controlApiClient.controlCodexTurn,
     submitClaudePrompt: controlApiClient.submitClaudePrompt,
+    harnessStore,
     syncCodexSessions,
     createNewCodexChat,
     createForkedSessionThread,
@@ -1230,6 +1243,31 @@ export async function startBot(): Promise<void> {
         currentModel,
         codexModels,
       });
+    },
+    harnessAutocomplete: async (_channelId, query) => {
+      const published = await harnessStore?.listPublished() ?? [];
+      const normalizedQuery = query.trim().toLowerCase();
+      const seen = new Set<string>();
+
+      return published.flatMap((entry) => {
+        if (seen.has(entry.harnessId)) {
+          return [];
+        }
+        seen.add(entry.harnessId);
+        const searchable = [
+          entry.harnessId,
+          entry.manifest.name,
+          entry.manifest.description,
+          entry.version,
+        ].join(" ").toLowerCase();
+        if (normalizedQuery && !searchable.includes(normalizedQuery)) {
+          return [];
+        }
+        return [{
+          name: `${entry.manifest.name} · ${entry.harnessId} · latest ${entry.version}`.slice(0, 100),
+          value: entry.harnessId,
+        }];
+      }).slice(0, 25);
     },
     answerCopyStore,
     locale,

@@ -10,6 +10,15 @@
 
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
+## v2.0 Release
+
+> ### NEW · Build Harnesses through conversation
+> **Create reusable agent workflows by answering a few natural-language questions—without knowing any file format—then run them with Codex or Claude Code in a separate execution thread.**
+>
+> Enter only a goal in `/harness create`, then optionally continue from the current work session or start fresh. The Builder moves through discovery, detailed design, full-design review, and explicit user confirmation. It structures the goal, real usage examples, inputs, steps and decisions, outputs, success criteria, permissions and prohibitions, failure behavior, resources, and useful roles. After the user approves the reviewed design, `/harness publish-run` publishes an immutable version and creates an execution session separate from the Builder.
+>
+> Published snapshots are pinned by exact version and digest. The Worker revalidates their path, file set, symlinks, manifest, and digest before every execution. Codex receives an official app-server skill item; Claude Code receives an isolated local plugin. Builder output cannot add hooks, MCP configuration, background agents, or executable scripts. Existing `/fork` preserves either Builder state or the exact execution snapshot in a distinct agent session.
+
 ## v1.5 Release
 
 > ### NEW · Agent-aware context control
@@ -60,7 +69,7 @@ The agent detects the conversation language and operating system, asks whether t
 
 ### Current deployment model
 
-Version 1 is self-hosted in a trusted personal environment. The host running each Discord Gateway and the optional Coordinator needs the corresponding bot token. After the user creates a private Discord server and invites the bot applications, the installation agent can configure the roles, channels, permissions, slash commands, local worker, and services.
+The current deployment model is self-hosted in a trusted personal environment. The host running each Discord Gateway and the optional Coordinator needs the corresponding bot token. After the user creates a private Discord server and invites the bot applications, the installation agent can configure the roles, channels, permissions, slash commands, local worker, and services.
 
 End users would not need bot tokens if the project operator centrally hosted both bots and users only invited them. That model still requires production multi-guild tenant isolation and one-time Local Agent pairing, which are not a completed v1 deployment path. Do not expose the current Control API or Agent WebSocket to the public internet without authentication.
 
@@ -109,6 +118,24 @@ While Codex or Claude Code is working, an ordinary message in the same thread st
 
 Use `/fork` inside a session thread to copy its conversation context into a new thread. The source and fork remain connected to separate agent sessions.
 
+### Build and run a Harness
+
+Start from a Codex or Claude Code thread:
+
+```text
+/harness create goal:I want a repeatable PR review workflow for this project source:Continue current session (recommended)
+```
+
+`source:current` copies the current conversation context; `source:fresh` starts empty. In the new **Harness Builder** thread, answer questions naturally—the Builder runs read-only and handles the internal skill and agent files. It progressively clarifies real usage examples, inputs and context, detailed steps and branches, outputs and success criteria, permissions and prohibitions, resources and roles, failure behavior, and validation cases.
+
+The Builder link appears as soon as its Discord thread exists; that same status message is updated while the agent session connects and the first question is prepared. The bot explains the four stages and how to answer, then shows a compact phase, response-count, section-coverage, and next-action update after each exchange. Buttons provide recommend-and-continue, approve-this-design, publish-and-run, publish-only, and status actions, leaving only substantive answers to type. If the Builder emits malformed hidden JSON, the bot asks the same agent session to correct it up to three times, and reserved internal JSON blocks never appear in Discord output even if a channel binding changes. The Builder must spend at least three responses discovering and designing the workflow, then show all nine design areas as a human-readable review and ask for confirmation. It can generate a candidate only after the user approves that exact design in the next reply. The bot persists the interview phase and reviewed-design digest, rejecting first-turn candidates, incomplete designs, and designs silently changed after confirmation. `/harness status` shows the same state on demand.
+
+```text
+/harness publish-run first_request:Review the current changes
+```
+
+This publishes an immutable exact version and digest, then opens a separate execution thread. Every later request in that thread receives the same snapshot. Use `/harness list`, `/harness status`, or `/harness run` to inspect and select published Harnesses. `/harness-help` displays the complete quick guide even in a channel without a linked agent session. Forking a Builder or execution thread preserves its Builder state or exact execution version in a separate agent session.
+
 ### Common commands
 
 | Command | Purpose |
@@ -123,6 +150,8 @@ Use `/fork` inside a session thread to copy its conversation context into a new 
 | `/queue-clear` | Remove requests that have not started |
 | `/interrupt` | Interrupt the active Codex or Claude Code turn |
 | `/fork` | Copy the current context into a new thread |
+| `/harness` | Select a Builder, publish, exact-version run, or status action from native subcommands |
+| `/harness-help` | Show Harness help without a linked agent session |
 | `/chat-resume` | Reopen a Claude Code session as a thread after its thread was deleted |
 | `/howtouse` | Teach the current agent Discord file and survey output. Add `prompt:` to forward a request with it |
 | `/where` | Show the computer, working directory, and session ID |
@@ -158,7 +187,7 @@ On a dedicated private Discord server, the installation agent sets the server-wi
 
 - Useful progress explanations accumulate quietly without a mention.
 - Questions, permission requests, completion, and failure mention the Operator role.
-- Long final answers are split across messages or attached as a complete text file.
+- Long final answers and IDE/background completion notices are delivered as ordered messages without truncation.
 - A bot cannot change a user's per-channel notification override. Only channels that a user previously customized need to be reset manually to **Only @mentions**.
 
 ## Multiple computers

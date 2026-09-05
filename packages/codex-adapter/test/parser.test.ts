@@ -56,6 +56,17 @@ describe("codex parser", () => {
     });
   });
 
+  it("parses the source session id from forked session metadata", () => {
+    const line =
+      '{"type":"session_meta","payload":{"id":"fork-session","cwd":"/Users/me/project","forked_from_id":"source-session"}}';
+
+    expect(parseSessionMetaLine(line)).toEqual({
+      id: "fork-session",
+      cwd: "/Users/me/project",
+      forkedFromId: "source-session",
+    });
+  });
+
   it("discovers sessions with workspace hints", async () => {
     const sessions = await discoverCodexSessions(fixturesRoot);
 
@@ -170,6 +181,33 @@ describe("codex parser", () => {
         updatedAt: "2026-04-22T01:15:24.714Z",
         cwdHint: "/Users/me/project",
       },
+    ]);
+
+    await fs.rm(codexHome, { recursive: true, force: true });
+  });
+
+  it("discovers the source session id for a forked session", async () => {
+    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-adapter-fork-"));
+    const sessionId = "019db2be-b2b3-7e82-9e61-8c84b28ad288";
+
+    await writeSessionIndex(codexHome, [{
+      id: sessionId,
+      name: "Forked Discord session",
+      updatedAt: "2026-04-22T01:15:24.714Z",
+    }]);
+    await fs.mkdir(path.join(codexHome, "sessions", "2026", "04", "22"), { recursive: true });
+    await fs.writeFile(
+      path.join(codexHome, "sessions", "2026", "04", "22", `rollout-${sessionId}.jsonl`),
+      `{"type":"session_meta","payload":{"id":"${sessionId}","cwd":"/Users/me/project","forked_from_id":"source-session"}}\n`,
+      "utf8",
+    );
+
+    await expect(discoverCodexSessions(codexHome)).resolves.toEqual([
+      expect.objectContaining({
+        id: sessionId,
+        cwdHint: "/Users/me/project",
+        forkedFromId: "source-session",
+      }),
     ]);
 
     await fs.rm(codexHome, { recursive: true, force: true });
@@ -397,6 +435,23 @@ describe("codex parser", () => {
         ],
       }),
     ]);
+
+    await fs.appendFile(
+      sessionFile,
+      JSON.stringify({
+        timestamp: "2026-04-24T01:17:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", last_agent_message: "" },
+      }) + "\n",
+      "utf8",
+    );
+
+    const afterEmptyCompletion = await discoverCodexSessions(codexHome, {
+      activeOnly: false,
+      includeExecSessions: true,
+      includeRealtimeEvents: true,
+    });
+    expect(afterEmptyCompletion[0]?.realtimeEvents).toHaveLength(2);
 
     await fs.rm(codexHome, { recursive: true, force: true });
   });

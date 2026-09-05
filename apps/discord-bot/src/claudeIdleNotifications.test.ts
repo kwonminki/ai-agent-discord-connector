@@ -116,4 +116,38 @@ describe("deliverClaudeIdleNotifications", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("delivers long Claude answers as ordered Discord messages without a text attachment", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-idle-notify-long-"));
+    const store = createDirectWorkerStore(path.join(tempRoot, "worker"));
+    const sent: DiscordMessagePayload[] = [];
+    const guild = {
+      sendTextMessage: async (_channelId: string, content: string | DiscordMessagePayload) => {
+        sent.push(content as DiscordMessagePayload);
+        return { id: `message-${sent.length}` };
+      },
+    };
+
+    try {
+      await store.initialize();
+      await store.appendClaudeSessionNotification({
+        at: new Date().toISOString(),
+        controlKey: "123456789",
+        sessionId: "claude-session-long",
+        message: `시작\n${"아주 긴 답변입니다. ".repeat(700)}\n끝`,
+        isError: false,
+      });
+
+      await deliverClaudeIdleNotifications({ guild, source: store });
+
+      expect(sent.length).toBeGreaterThan(1);
+      expect(sent[0]?.embeds[0]?.title).toBe("알림 내용");
+      expect(sent.slice(1).every((payload) => payload.embeds[0]?.title === "알림 내용 (계속)")).toBe(true);
+      expect(sent.every((payload) => payload.files === undefined)).toBe(true);
+      expect(sent.flatMap((payload) => payload.embeds.map((embed) => embed.description ?? "")).join("\n"))
+        .toContain("끝");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

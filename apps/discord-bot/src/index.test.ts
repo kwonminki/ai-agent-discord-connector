@@ -153,6 +153,7 @@ describe("bot entrypoint", () => {
         cwdPicker: false,
         isManagedChannel: expect.any(Function),
         modelAutocomplete: expect.any(Function),
+        harnessAutocomplete: expect.any(Function),
         answerCopyStore: expect.any(Object),
         locale: "ko",
       },
@@ -247,7 +248,7 @@ describe("bot entrypoint", () => {
       ).resolves.toMatchObject({
         computerId: "local-dev",
         computerDisplayName: "Local Dev",
-        connectorVersion: "1.5.0",
+        connectorVersion: "2.0.0",
         preferredAgent: "codex",
         channels: {
           codex: "channel-1",
@@ -265,6 +266,7 @@ describe("bot entrypoint", () => {
           cwdPicker: true,
           isManagedChannel: expect.any(Function),
           modelAutocomplete: expect.any(Function),
+          harnessAutocomplete: expect.any(Function),
           answerCopyStore: expect.any(Object),
           locale: "en",
         },

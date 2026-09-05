@@ -18,6 +18,9 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
   cachedTokenUsageTokens?: number;
   contextWindow?: number;
   compactClosesEarly?: boolean;
+  compactDelayMs?: number;
+  compactSendsUnrelatedCompletion?: boolean;
+  rejectTurnDuringCompaction?: boolean;
   threadId?: string;
 } = {}): Promise<{
   fakeCodex: string;
@@ -31,6 +34,9 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
   const cachedTokenUsageTokens = options.cachedTokenUsageTokens ?? 0;
   const contextWindow = options.contextWindow ?? 258_000;
   const compactClosesEarly = options.compactClosesEarly ?? false;
+  const compactDelayMs = options.compactDelayMs ?? 0;
+  const compactSendsUnrelatedCompletion = options.compactSendsUnrelatedCompletion ?? false;
+  const rejectTurnDuringCompaction = options.rejectTurnDuringCompaction ?? false;
   const threadId = options.threadId ?? "thread-persist-1";
 
   await writeFile(
@@ -44,6 +50,7 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
       "const listenUrl = process.argv[process.argv.indexOf('--listen') + 1] ?? '';",
       "const server = http.createServer();",
       "const wss = new WebSocketServer({ server, perMessageDeflate: false });",
+      "let compacting = false;",
       "wss.on('connection', (socket) => {",
       `  let threadId = ${JSON.stringify(threadId)};`,
       "  socket.on('message', (raw) => {",
@@ -63,6 +70,10 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
       "      return;",
       "    }",
       "    if (message.method === 'turn/start') {",
+      `      if (${rejectTurnDuringCompaction} && compacting) {`,
+      "        socket.send(JSON.stringify({ id: message.id, error: { code: -32000, message: 'thread is compacting' } }));",
+      "        return;",
+      "      }",
       "      socket.send(JSON.stringify({ id: message.id, result: { turn: { id: 'turn-1', status: 'inProgress', items: [], itemsView: 'notLoaded', error: null } } }));",
       `      if (${tokenUsageTokens} > 0) {`,
       `        socket.send(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId, turnId: 'turn-1', tokenUsage: { last: { inputTokens: ${tokenUsageTokens}, cachedInputTokens: ${cachedTokenUsageTokens}, outputTokens: 10, reasoningOutputTokens: 0, totalTokens: ${tokenUsageTokens} }, total: { inputTokens: ${tokenUsageTokens}, cachedInputTokens: ${cachedTokenUsageTokens}, outputTokens: 10, reasoningOutputTokens: 0, totalTokens: ${tokenUsageTokens} }, modelContextWindow: ${contextWindow} } } }));`,
@@ -73,8 +84,15 @@ async function createFakeCodexAppServer(tempRoot: string, options: {
       "    }",
       "    if (message.method === 'thread/compact/start') {",
       `      if (${compactClosesEarly}) { socket.close(); return; }`,
+      "      compacting = true;",
       "      socket.send(JSON.stringify({ id: message.id, result: {} }));",
-      "      socket.send(JSON.stringify({ method: 'thread/compacted', params: { threadId, turnId: 'turn-compact-1' } }));",
+      `      if (${compactSendsUnrelatedCompletion}) {`,
+      "        socket.send(JSON.stringify({ method: 'turn/completed', params: { threadId: 'unrelated-thread', turn: { id: 'unrelated-turn', status: 'completed', error: null } } }));",
+      "      }",
+      `      setTimeout(() => {`,
+      "        compacting = false;",
+      "        socket.send(JSON.stringify({ method: 'item/completed', params: { threadId, turnId: 'turn-compact-1', item: { type: 'contextCompaction', id: 'compact-item-1' } } }));",
+      `      }, ${compactDelayMs});`,
       "      return;",
       "    }",
       "    if (message.id !== undefined) {",
@@ -207,6 +225,52 @@ describe("persistent Codex app-server", () => {
       ]);
       expect(notifications[0]?.message).toContain("200k/258k");
       expect(notifications[0]?.message).not.toContain("300k/258k");
+    } finally {
+      await disposeCodexPersistentAppServers();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("waits for in-flight compaction before starting the next turn on the same thread", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-persist-compact-wait-"));
+    const fake = await createFakeCodexAppServer(tempRoot, {
+      tokenUsageTokens: 200_000,
+      compactDelayMs: 100,
+      compactSendsUnrelatedCompletion: true,
+      rejectTurnDuringCompaction: true,
+      threadId: "thread-persist-compact-wait",
+    });
+    const secondTurnEvents: Array<{ type: string; label?: string }> = [];
+
+    try {
+      const first = await runCodexAppServerPrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "첫 번째 긴 작업",
+        timeoutMs: 10_000,
+        codexCommand: fake.fakeCodex,
+        controlKey: "channel-persist-compact-wait",
+      });
+      expect(first.status).toBe("completed");
+
+      const second = await runCodexAppServerPrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "압축 직후 도착한 다음 작업",
+        timeoutMs: 10_000,
+        codexCommand: fake.fakeCodex,
+        sessionId: "thread-persist-compact-wait",
+        controlKey: "channel-persist-compact-wait",
+        onProgress: (event) => {
+          secondTurnEvents.push(event as { type: string; label?: string });
+        },
+      });
+
+      expect(second.status).toBe("completed");
+      expect(secondTurnEvents).toContainEqual(expect.objectContaining({
+        type: "operation-progress",
+        label: "컨텍스트 자동 압축 마무리 대기",
+      }));
     } finally {
       await disposeCodexPersistentAppServers();
       await rm(tempRoot, { recursive: true, force: true });

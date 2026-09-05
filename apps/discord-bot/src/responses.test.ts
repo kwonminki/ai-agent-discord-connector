@@ -539,6 +539,37 @@ describe("responses", () => {
     ]);
   });
 
+  it("hides reserved Harness Builder state even when the channel binding was lost", () => {
+    const payload = formatAgentResultUpdate(
+      {
+        computerDisplayName: "Local Dev",
+        workspaceDisplayName: "Connector",
+        cwd: "/repo",
+        prompt: "하네스를 계속 설계해줘",
+      },
+      {
+        result: {
+          status: "completed",
+          sessionId: "builder-session",
+          finalMessage: [
+            "설계를 반영했습니다. 다음 선택을 알려주세요.",
+            "```codex-discord-harness-brief",
+            JSON.stringify({ phase: "design", internal: "hidden-state" }),
+            "```",
+            "```codex-discord-harness",
+            JSON.stringify({ manifest: { id: "hidden" }, files: [] }),
+            "```",
+          ].join("\n"),
+        },
+      },
+    );
+    const rendered = JSON.stringify([payload, ...getAgentResultContinuationMessages(payload)]);
+
+    expect(rendered).toContain("설계를 반영했습니다");
+    expect(rendered).not.toContain("codex-discord-harness");
+    expect(rendered).not.toContain("hidden-state");
+  });
+
   it("keeps fenced code blocks balanced when a long answer is split", () => {
     const chunks = splitDiscordMessageContent([
       "코드 예시입니다.",

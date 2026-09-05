@@ -189,6 +189,25 @@ export function createEmptyDirectSyncState(): DirectSyncState {
   };
 }
 
+export function hasPendingCodexForkReservation(
+  state: Pick<DirectSyncState, "sessionChannels">,
+  session: { forkedFromId?: string },
+): boolean {
+  const sourceSessionId = session.forkedFromId?.trim().toLowerCase();
+
+  if (!sourceSessionId) {
+    return false;
+  }
+
+  return state.sessionChannels.some(
+    (channel) =>
+      channel.channelMode !== "claude-code" &&
+      !channel.codexSessionId &&
+      !channel.claudeSessionId &&
+      channel.pendingForkSourceSessionId?.trim().toLowerCase() === sourceSessionId,
+  );
+}
+
 function normalizeDirectSyncState(state: Partial<DirectSyncState>): DirectSyncState {
   const transcriptSyncMode =
     state.transcriptSyncMode === "realtime" || state.transcriptSyncMode === "on-chat"

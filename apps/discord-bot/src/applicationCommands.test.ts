@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DISCORD_APPLICATION_COMMANDS,
   discordApplicationCommands,
+  isHarnessHelpInteraction,
   registerDiscordApplicationCommands,
   routeDiscordApplicationCommand,
 } from "./applicationCommands.js";
@@ -21,6 +22,10 @@ function options(input: Record<string, string | number | boolean | null>) {
       const value = input[name];
       return typeof value === "boolean" ? value : null;
     }),
+    getSubcommand: vi.fn(() => {
+      const value = input.__subcommand;
+      return typeof value === "string" ? value : null;
+    }),
   };
 }
 
@@ -31,6 +36,8 @@ describe("Discord application commands", () => {
       "codex-command",
       "compact",
       "skill",
+      "harness",
+      "harness-help",
       "model",
       "effort",
       "settings",
@@ -103,16 +110,51 @@ describe("Discord application commands", () => {
     expect(modelCommand?.options?.[0]?.choices).toBeUndefined();
   });
 
+  it("uses selectable Harness subcommands and asks only for action-specific inputs", () => {
+    const harness = DISCORD_APPLICATION_COMMANDS.find((command) => command.name === "harness");
+    const create = harness?.options?.find((option) => option.name === "create");
+    const run = harness?.options?.find((option) => option.name === "run");
+
+    expect(harness?.options?.map((option) => option.name)).toEqual([
+      "create",
+      "publish-run",
+      "publish",
+      "run",
+      "status",
+      "list",
+      "leave",
+      "cancel",
+      "help",
+    ]);
+    expect(harness?.options?.every((option) => option.type === 1)).toBe(true);
+    expect(create?.options?.find((option) => option.name === "goal")).toEqual(
+      expect.objectContaining({ required: true }),
+    );
+    expect(create?.options?.find((option) => option.name === "source")?.choices).toEqual([
+      { name: "현재 세션 이어서 (추천)", value: "current" },
+      { name: "새 문맥에서 시작", value: "fresh" },
+    ]);
+    expect(run?.options?.find((option) => option.name === "harness")).toEqual(
+      expect.objectContaining({ required: true, autocomplete: true }),
+    );
+  });
+
   it("registers English slash command descriptions without changing command names", () => {
     const commands = discordApplicationCommands("en");
     const codex = commands.find((command) => command.name === "codex");
     const compact = commands.find((command) => command.name === "compact");
+    const harness = commands.find((command) => command.name === "harness");
 
     expect(codex?.description).toBe("Send a natural-language request to Codex.");
     expect(codex?.options?.[0]?.name).toBe("prompt");
     expect(codex?.options?.[0]?.description).toBe("Request to send to Codex");
     expect(compact?.description).toBe("Compact the context of the current Codex or Claude Code session.");
     expect(compact?.options?.[0]?.description).toBe("Additional instructions for context compaction");
+    expect(harness?.description).toBe("Build a reusable Harness through conversation and run an immutable version.");
+    const create = harness?.options?.find((option) => option.name === "create");
+    expect(create?.description).toBe("Design a new Harness by answering guided questions.");
+    expect(create?.options?.find((option) => option.name === "goal")?.description)
+      .toBe("Goal of the repeatable task you want to create");
   });
 
   it("registers Chinese and Japanese slash command descriptions", () => {
@@ -120,6 +162,8 @@ describe("Discord application commands", () => {
     const japanese = discordApplicationCommands("ja").find((command) => command.name === "codex");
     const chineseCompact = discordApplicationCommands("zh").find((command) => command.name === "compact");
     const japaneseCompact = discordApplicationCommands("ja").find((command) => command.name === "compact");
+    const chineseHarness = discordApplicationCommands("zh").find((command) => command.name === "harness");
+    const japaneseHarness = discordApplicationCommands("ja").find((command) => command.name === "harness");
 
     expect(chinese?.description).toBe("向 Codex 发送自然语言请求。");
     expect(chinese?.options?.[0]?.description).toBe("发送给 Codex 的请求");
@@ -127,6 +171,8 @@ describe("Discord application commands", () => {
     expect(japanese?.options?.[0]?.description).toBe("Codex に送るリクエスト");
     expect(chineseCompact?.description).toBe("压缩当前 Codex 或 Claude Code 会话的上下文。");
     expect(japaneseCompact?.description).toBe("現在の Codex または Claude Code セッションのコンテキストを圧縮します。");
+    expect(chineseHarness?.description).toBe("通过问答创建可复用的 Harness，并运行不可变版本。");
+    expect(japaneseHarness?.description).toBe("対話で再利用可能な Harness を作成し、不変バージョンを実行します。");
   });
 
   it("uses English for generated agent prompts in an English installation", () => {
@@ -166,6 +212,43 @@ describe("Discord application commands", () => {
         }),
       }),
     ).toBe("codex frontend-design skill을 적용해서 다음 요청을 처리해줘: Discord UI를 더 직관적으로 개선해줘");
+  });
+
+  it("encodes /harness without exposing internal command fields to shell routing", () => {
+    const command = routeDiscordApplicationCommand({
+      commandName: "harness",
+      options: options({
+        __subcommand: "create",
+        source: "current",
+        thread_name: "PR Review Builder",
+        goal: "반복 가능한 PR 리뷰 workflow를 만들고 싶어",
+      }),
+    });
+
+    expect(command).toMatch(/^__cdc_harness /);
+    expect(JSON.parse(decodeURIComponent(command!.slice("__cdc_harness ".length)))).toEqual({
+      action: "create",
+      source: "current",
+      name: "PR Review Builder",
+      harnessId: null,
+      version: null,
+      prompt: "반복 가능한 PR 리뷰 workflow를 만들고 싶어",
+    });
+  });
+
+  it("recognizes both global and subcommand Harness help without a session route", () => {
+    expect(isHarnessHelpInteraction({
+      commandName: "harness-help",
+      options: options({}),
+    })).toBe(true);
+    expect(isHarnessHelpInteraction({
+      commandName: "harness",
+      options: options({ __subcommand: "help" }),
+    })).toBe(true);
+    expect(isHarnessHelpInteraction({
+      commandName: "harness",
+      options: options({ __subcommand: "create" }),
+    })).toBe(false);
   });
 
   it("routes /howtouse through the channel-aware agent shortcut", () => {

@@ -30,6 +30,7 @@ import {
   type DirectWorkerStore,
 } from "./directWorkerStore.js";
 import { runWorkspaceCommand } from "./runner.js";
+import { verifyHarnessWorkerBinding } from "./harnessRuntime.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_MAX_CONCURRENCY = 4;
@@ -97,8 +98,19 @@ async function runWorkerJob(
   }
 
   if (request.type === "run-claude-prompt") {
+    const harnessRuntime = request.payload.harness
+      ? await verifyHarnessWorkerBinding(request.payload.harness, "claude")
+      : null;
     return runClaudePrompt({
       ...request.payload,
+      ...(harnessRuntime
+        ? {
+            harness: {
+              ...harnessRuntime.binding,
+              snapshotPath: harnessRuntime.claudePluginPath,
+            },
+          }
+        : {}),
       // The durable queue key is the worker's channel-isolation boundary.
       // Never let a stale session-derived payload key register controls under
       // a different Discord channel than the one this job is serialized on.
@@ -108,8 +120,23 @@ async function runWorkerJob(
     });
   }
 
+  if (request.payload.input.harness && request.payload.runner !== "app-server") {
+    throw new Error("Harness execution requires the Codex app-server runner.");
+  }
+  const harnessRuntime = request.payload.input.harness
+    ? await verifyHarnessWorkerBinding(request.payload.input.harness, "codex")
+    : null;
+
   const runnerInput: RunCodexPromptInput = {
     ...request.payload.input,
+    ...(harnessRuntime
+      ? {
+          harness: {
+            ...harnessRuntime.binding,
+            snapshotPath: harnessRuntime.claudePluginPath,
+          },
+        }
+      : {}),
     // Keep the app-server registry and active execution map on the same
     // authoritative key for steering and interrupts across turn changes.
     controlKey: request.queueKey,

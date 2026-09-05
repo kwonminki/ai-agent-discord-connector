@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { HarnessWorkerBinding } from "../../../packages/core/src/index.js";
 
 export interface RunCodexPromptInput {
   workspaceRoot: string;
@@ -19,6 +20,8 @@ export interface RunCodexPromptInput {
   model?: string | null;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | null;
   controlKey?: string;
+  harnessBuilder?: boolean;
+  harness?: HarnessWorkerBinding;
   onApprovalRequest?: (request: CodexApprovalRequest) => Promise<CodexApprovalDecision> | CodexApprovalDecision;
   onUserInputRequest?: (request: CodexUserInputRequest) => Promise<CodexUserInputResponse> | CodexUserInputResponse;
 }

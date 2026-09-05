@@ -1,6 +1,11 @@
 import {
   classifyCommand,
+  extractHarnessCandidate,
+  extractHarnessInterviewBrief,
+  stripHarnessBuilderBlocks,
   type ConnectorLocale,
+  type HarnessProvider,
+  type HarnessSourceMode,
 } from "../../../packages/core/src/index.js";
 import type { ManagedDiscordChannelContext } from "./channelContext.js";
 import type {
@@ -21,6 +26,7 @@ import type {
   CodexPromptApprovalRequest,
   CodexPromptUserInputRequest,
   CodexPromptUserInputResponse,
+  ControlApiJobResponse,
   ControlApiClient,
 } from "./controlApiClient.js";
 import type { TranscriptSyncMode } from "./directState.js";
@@ -32,6 +38,27 @@ import { buildAgentRelayCallbackMessages, collectAgentResultFiles } from "./agen
 import type { ActiveRelayPresence } from "./agentRelayPresence.js";
 import type { ScheduleCommandRequest, ScheduleCommandResult } from "./scheduler.js";
 import { routeDiscordMessage } from "./commandRouter.js";
+import type { HarnessCommandRequest } from "./commandRouter.js";
+import {
+  formatHarnessBuildStatus,
+  formatHarnessBuilderNotice,
+  formatHarnessBuilderGuide,
+  formatHarnessCandidateSaved,
+  formatHarnessInterviewProgress,
+  formatHarnessList,
+  formatHarnessPublished,
+  formatHarnessRunReady,
+  formatHarnessRunStatus,
+  harnessBuilderPrompt,
+  harnessBuilderRepairPrompt,
+  harnessExecutionPrompt,
+} from "./harnessPrompts.js";
+import type {
+  HarnessBuildState,
+  HarnessRunState,
+  HarnessStore,
+  PublishedHarnessVersionState,
+} from "./harnessStore.js";
 import type { DiscordMessagePayload } from "./responses.js";
 import { AGENT_PROGRESS_EVENT_LIMIT, isAgentQuestionMessage, withRoleMentions } from "./responses.js";
 import {
@@ -95,6 +122,8 @@ import type { CodexPermissionSettings, SelectableCodexSession } from "./response
 export const DEFAULT_AGENT_PROMPT_TIMEOUT_MS = 5 * 60 * 60 * 1_000;
 const AUTO_STEER_READY_RETRY_ATTEMPTS = 8;
 const DEFAULT_AUTO_STEER_RETRY_DELAY_MS = 250;
+export const DEFAULT_HARNESS_VALIDATION_RETRY_ATTEMPTS = 3;
+const MAX_HARNESS_VALIDATION_RETRY_ATTEMPTS = 5;
 
 export interface BotReloadExecutionState {
   activeCount: number;
@@ -127,6 +156,16 @@ export function resolveAgentPromptTimeoutMs(
       : DEFAULT_AGENT_PROMPT_TIMEOUT_MS;
 
   return Math.max(channelTimeoutMs, codexTimeoutMs);
+}
+
+export function resolveHarnessValidationRetryAttempts(
+  configuredValue = process.env.CONNECT_HARNESS_VALIDATION_RETRIES,
+): number {
+  const parsed = Number.parseInt(configuredValue?.trim() ?? "", 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_HARNESS_VALIDATION_RETRY_ATTEMPTS;
+  }
+  return Math.min(Math.max(parsed, 0), MAX_HARNESS_VALIDATION_RETRY_ATTEMPTS);
 }
 
 export type { ManagedDiscordChannelContext } from "./channelContext.js";
@@ -162,6 +201,7 @@ export interface CreateDiscordMessageHandlerInput {
   submitCodexPrompt?: ControlApiClient["submitCodexPrompt"];
   controlCodexTurn?: ControlApiClient["controlCodexTurn"];
   autoSteerRetryDelayMs?: number;
+  harnessValidationRetryAttempts?: number;
   submitClaudePrompt?: ControlApiClient["submitClaudePrompt"];
   syncCodexSessions?: (input: {
     guild: DiscordGuildSurface;
@@ -292,6 +332,7 @@ export interface CreateDiscordMessageHandlerInput {
     attachments: DiscordIncomingAttachment[];
     content: string;
   }) => Promise<{ content: string; files: MaterializedDiscordAttachment[] }>;
+  harnessStore?: HarnessStore;
 }
 
 export interface DiscordMessageHandler {
@@ -599,6 +640,23 @@ function extractAgentResponseFinalMessage(response: { result?: unknown; error?: 
     : null;
 }
 
+function withAgentFinalMessage<T extends { result?: unknown; error?: unknown }>(
+  response: T,
+  finalMessage: string,
+): T {
+  if (response.error || typeof response.result !== "object" || response.result === null) {
+    return response;
+  }
+
+  return {
+    ...response,
+    result: {
+      ...response.result,
+      finalMessage,
+    },
+  };
+}
+
 function forkResponseErrorMessage(
   response: { result?: unknown; error?: unknown },
   agentLabel: "Codex" | "Claude Code",
@@ -838,6 +896,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     updateDefaults: input.updateAgentDefaults,
     updateSession: input.updateSessionAgentSettings,
   });
+  const harnessValidationRetryAttempts = input.harnessValidationRetryAttempts === undefined
+    ? resolveHarnessValidationRetryAttempts()
+    : resolveHarnessValidationRetryAttempts(String(input.harnessValidationRetryAttempts));
   let deferredRestartRequested = false;
   let restartScheduled = false;
   let deferredRestartCheckRunning = false;
@@ -1042,6 +1103,830 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       allowedRoleIds: channelContext.allowedRoleIds,
       locale: input.locale,
     });
+  }
+
+  function harnessProvider(channelContext: ManagedDiscordChannelContext): HarnessProvider | null {
+    if (channelContext.channelMode === "claude-code" || channelContext.agentMain === "claude") {
+      return "claude";
+    }
+    if (channelContext.channelMode === "session-linked" || channelContext.agentMain === "codex") {
+      return "codex";
+    }
+    return null;
+  }
+
+  function channelAgentSessionId(
+    channelId: string,
+    channelContext: ManagedDiscordChannelContext,
+    provider: HarnessProvider,
+  ): string | null {
+    return provider === "claude"
+      ? claudeSessionIdsByChannel.get(channelId) ?? channelContext.claudeSessionId ?? null
+      : codexSessionIdsByChannel.get(channelId) ?? channelContext.codexSessionId ?? null;
+  }
+
+  async function prepareHarnessBuilderResponse<T extends { result?: unknown; error?: unknown }>(
+    build: HarnessBuildState,
+    response: T,
+    options: { retrying?: boolean } = {},
+  ): Promise<{ response: T; notice: string | null; validationErrors: string[] }> {
+    const finalMessage = extractAgentResponseFinalMessage(response);
+    if (!finalMessage) {
+      const error = "Builder 응답에 최종 메시지가 없어 설계 상태를 읽을 수 없습니다.";
+      return { response, notice: `⚠️ ${error}`, validationErrors: [error] };
+    }
+    const interviewExtraction = extractHarnessInterviewBrief(finalMessage);
+    const candidateExtraction = extractHarnessCandidate(finalMessage);
+    const notices: string[] = [];
+    const validationErrors: string[] = [];
+    let acceptedInterviewDigest: string | null = null;
+    let acceptedBuild: HarnessBuildState | null = null;
+
+    if (interviewExtraction.error) {
+      await input.harnessStore?.recordInterviewError(build.buildId, interviewExtraction.error);
+      notices.push(`⚠️ 설계 브리프 검증 실패:\n${interviewExtraction.error}`);
+      validationErrors.push(interviewExtraction.error);
+    } else if (!interviewExtraction.brief) {
+      const error = "Builder 응답에 필수 설계 브리프가 없습니다. 대화 내용은 보이지만 설계 단계에는 반영하지 않았습니다.";
+      await input.harnessStore?.recordInterviewError(build.buildId, error);
+      notices.push(`⚠️ ${error}`);
+      validationErrors.push(error);
+    } else {
+      try {
+        const currentBuild = options.retrying
+          ? await input.harnessStore?.buildForChannel(build.builderDiscordChannelId)
+          : null;
+        const isRetryOfAcceptedBrief = currentBuild?.interviewBrief?.digest === interviewExtraction.brief.digest &&
+          currentBuild.interviewPhase === interviewExtraction.brief.phase;
+        const updated = await input.harnessStore?.recordInterview(
+          build.buildId,
+          interviewExtraction.brief,
+          isRetryOfAcceptedBrief ? { countTurn: false } : undefined,
+        );
+        acceptedBuild = updated ?? null;
+        acceptedInterviewDigest = updated?.interviewBrief?.digest ?? interviewExtraction.brief.digest;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await input.harnessStore?.recordInterviewError(build.buildId, message);
+        notices.push(`⚠️ 설계 단계 검증 실패:\n${message}`);
+        validationErrors.push(message);
+      }
+    }
+
+    if (candidateExtraction.error) {
+      await input.harnessStore?.recordCandidateError(build.buildId, candidateExtraction.error);
+      notices.push(`⚠️ 하네스 후보 검증 실패:\n${candidateExtraction.error}`);
+      validationErrors.push(candidateExtraction.error);
+    } else if (candidateExtraction.candidate) {
+      if (!acceptedInterviewDigest) {
+        const error = "같은 응답의 확인된 ready 설계 브리프 없이는 하네스 후보를 저장할 수 없습니다.";
+        await input.harnessStore?.recordCandidateError(build.buildId, error);
+        notices.push(`⚠️ ${error}`);
+        validationErrors.push(error);
+      } else {
+        try {
+          const saved = await input.harnessStore?.saveCandidate(
+            build.buildId,
+            candidateExtraction.candidate,
+            acceptedInterviewDigest,
+          );
+          if (saved) {
+            notices.push(formatHarnessCandidateSaved(saved));
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await input.harnessStore?.recordCandidateError(build.buildId, message);
+          notices.push(`⚠️ 하네스 후보 저장 거부:\n${message}`);
+          validationErrors.push(message);
+        }
+      }
+    } else if (interviewExtraction.brief?.phase === "ready" && acceptedInterviewDigest) {
+      const error = "ready 설계 브리프와 함께 최종 하네스 후보가 출력되지 않았습니다.";
+      await input.harnessStore?.recordCandidateError(build.buildId, error);
+      notices.push(`⚠️ ${error}`);
+      validationErrors.push(error);
+    }
+
+    if (acceptedBuild) {
+      const latestBuild = await input.harnessStore?.buildForChannel(build.builderDiscordChannelId) ?? acceptedBuild;
+      notices.unshift(formatHarnessInterviewProgress(latestBuild));
+    }
+
+    const visible = stripHarnessBuilderBlocks(finalMessage) || "Harness Builder가 설계 상태를 갱신했습니다.";
+    return {
+      response: withAgentFinalMessage(response, visible),
+      notice: notices.length > 0 ? notices.join("\n\n") : null,
+      validationErrors,
+    };
+  }
+
+  async function prepareHarnessBuilderResponseWithRetries(inputRepair: {
+    build: HarnessBuildState;
+    response: ControlApiJobResponse;
+    provider: HarnessProvider;
+    channelContext: ManagedDiscordChannelContext;
+    settingsChannelId: string;
+    queueKey: string;
+    workspaceRoot: string;
+    cwd: string;
+    sessionId: string | null;
+    sessionName?: string | null;
+  }): Promise<{ response: ControlApiJobResponse; notice: string | null }> {
+    let currentBuild = inputRepair.build;
+    let currentResponse = inputRepair.response;
+    let prepared = await prepareHarnessBuilderResponse(currentBuild, currentResponse);
+    let retryCount = 0;
+
+    while (
+      prepared.validationErrors.length > 0 &&
+      retryCount < harnessValidationRetryAttempts &&
+      inputRepair.sessionId &&
+      !promptResponseFailed(currentResponse)
+    ) {
+      retryCount += 1;
+      currentBuild = await input.harnessStore?.buildForChannel(currentBuild.builderDiscordChannelId) ?? currentBuild;
+      const repairPrompt = harnessBuilderRepairPrompt({
+        build: currentBuild,
+        errors: prepared.validationErrors,
+        attempt: retryCount,
+        maxAttempts: harnessValidationRetryAttempts,
+      });
+      const settings = agentSettingsController.get(inputRepair.settingsChannelId, inputRepair.channelContext);
+
+      try {
+        currentResponse = inputRepair.provider === "claude"
+          ? await input.submitClaudePrompt!({
+            computerId: inputRepair.channelContext.computerId,
+            queueKey: inputRepair.queueKey,
+            payload: {
+              workspaceRoot: inputRepair.workspaceRoot,
+              cwd: inputRepair.cwd,
+              prompt: repairPrompt,
+              timeoutMs: resolveAgentPromptTimeoutMs(inputRepair.channelContext.timeoutMs),
+              controlKey: inputRepair.queueKey,
+              sessionId: inputRepair.sessionId,
+              forkSession: false,
+              sessionName: inputRepair.sessionName,
+              model: settings.model,
+              effort: settings.effort,
+              harnessBuilder: true,
+            },
+          })
+          : await input.submitCodexPrompt!({
+            computerId: inputRepair.channelContext.computerId,
+            queueKey: inputRepair.queueKey,
+            payload: {
+              workspaceRoot: inputRepair.workspaceRoot,
+              cwd: inputRepair.cwd,
+              prompt: repairPrompt,
+              timeoutMs: resolveAgentPromptTimeoutMs(inputRepair.channelContext.timeoutMs),
+              controlKey: inputRepair.queueKey,
+              sessionId: inputRepair.sessionId,
+              forkSession: false,
+              sessionName: inputRepair.sessionName,
+              model: settings.model,
+              reasoningEffort: agentSettingsController.codexReasoningEffort(
+                inputRepair.settingsChannelId,
+                inputRepair.channelContext,
+              ),
+              harnessBuilder: true,
+            },
+          });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          response: prepared.response,
+          notice: [
+            prepared.notice,
+            `⚠️ Builder 형식 자동 복구 ${retryCount}/${harnessValidationRetryAttempts}회차 요청이 실패했습니다:\n${message}`,
+            "Builder 상태는 유지했습니다. 이 스레드에서 메시지를 보내면 같은 설계를 이어갑니다.",
+          ].filter(Boolean).join("\n\n"),
+        };
+      }
+
+      const repairFailure = forkResponseErrorMessage(
+        currentResponse,
+        inputRepair.provider === "claude" ? "Claude Code" : "Codex",
+      );
+      if (repairFailure) {
+        return {
+          response: prepared.response,
+          notice: [
+            prepared.notice,
+            `⚠️ Builder 형식 자동 복구 ${retryCount}/${harnessValidationRetryAttempts}회차가 실패했습니다:\n${repairFailure}`,
+            "Builder 상태는 유지했습니다. 이 스레드에서 메시지를 보내면 같은 설계를 이어갑니다.",
+          ].filter(Boolean).join("\n\n"),
+        };
+      }
+
+      const repairSessionId = extractAgentResponseSessionId(currentResponse);
+      if (
+        repairSessionId &&
+        repairSessionId.toLowerCase() !== inputRepair.sessionId.toLowerCase()
+      ) {
+        return {
+          response: prepared.response,
+          notice: [
+            prepared.notice,
+            "⚠️ Builder 형식 자동 복구가 다른 agent session을 반환해 안전하게 중단했습니다.",
+            "Builder 상태는 유지했습니다. 이 스레드에서 메시지를 보내면 원래 세션으로 이어갑니다.",
+          ].filter(Boolean).join("\n\n"),
+        };
+      }
+
+      currentBuild = await input.harnessStore?.buildForChannel(currentBuild.builderDiscordChannelId) ?? currentBuild;
+      prepared = await prepareHarnessBuilderResponse(currentBuild, currentResponse, { retrying: true });
+    }
+
+    if (prepared.validationErrors.length === 0) {
+      return {
+        response: prepared.response,
+        notice: [
+          retryCount > 0
+            ? `🔧 Builder 출력 형식 오류를 같은 세션에서 자동으로 ${retryCount}회 수정해 복구했습니다.`
+            : null,
+          prepared.notice,
+        ].filter(Boolean).join("\n\n") || null,
+      };
+    }
+
+    const retrySummary = harnessValidationRetryAttempts === 0
+      ? "Builder 출력 형식 자동 복구가 비활성화되어 있습니다."
+      : inputRepair.sessionId
+        ? `Builder 출력 형식 자동 복구를 ${retryCount}회 시도했지만 검증을 통과하지 못했습니다.`
+        : "Builder agent session ID가 없어 출력 형식 자동 복구를 시작할 수 없었습니다.";
+    return {
+      response: prepared.response,
+      notice: [
+        prepared.notice,
+        `⚠️ ${retrySummary}`,
+        "Builder 상태는 유지했습니다. 이 스레드에서 메시지를 보내면 같은 설계를 이어갑니다.",
+      ].filter(Boolean).join("\n\n"),
+    };
+  }
+
+  async function submitProvisionedHarnessTurn(inputTurn: {
+    provider: HarnessProvider;
+    thread: NewCodexChatResult;
+    guild: DiscordGuildSurface;
+    settingsChannelId: string;
+    sourceSessionId: string | null;
+    forkSession: boolean;
+    sourceContext: ManagedDiscordChannelContext;
+    build?: HarnessBuildState;
+    run?: HarnessRunState;
+    userPrompt: string;
+    reply: DiscordMessageLike["reply"];
+    replyWithRoleMentions: DiscordMessageLike["reply"];
+  }): Promise<{
+    sessionId: string;
+    visibleMessage: string;
+    candidateNotice: string | null;
+  }> {
+    const settings = agentSettingsController.get(
+      inputTurn.settingsChannelId,
+      inputTurn.sourceContext,
+    );
+    const threadReply: DiscordMessageLike["reply"] = async (payload) => {
+      if (!inputTurn.guild.sendTextMessage) {
+        return inputTurn.reply(payload);
+      }
+      const sent = await inputTurn.guild.sendTextMessage(inputTurn.thread.discordChannelId, payload);
+      if (!sent?.id || !inputTurn.guild.editTextMessage) {
+        return;
+      }
+      return {
+        edit: (editedPayload) =>
+          inputTurn.guild.editTextMessage!(inputTurn.thread.discordChannelId, sent.id!, editedPayload),
+      };
+    };
+    const threadReplyWithRoleMentions: DiscordMessageLike["reply"] = async (payload) => {
+      if (!inputTurn.guild.sendTextMessage) {
+        return inputTurn.replyWithRoleMentions(payload);
+      }
+      const sent = await inputTurn.guild.sendTextMessage(
+        inputTurn.thread.discordChannelId,
+        typeof payload === "string"
+          ? withRoleMentions(payload, inputTurn.sourceContext.allowedRoleIds)
+          : payload,
+        { mentionRoleIds: inputTurn.sourceContext.allowedRoleIds },
+      );
+      if (!sent?.id || !inputTurn.guild.editTextMessage) {
+        return;
+      }
+      return {
+        edit: (editedPayload) =>
+          inputTurn.guild.editTextMessage!(inputTurn.thread.discordChannelId, sent.id!, editedPayload),
+      };
+    };
+    const prompt = inputTurn.build
+      ? harnessBuilderPrompt({ build: inputTurn.build, userMessage: inputTurn.userPrompt, initial: true })
+      : harnessExecutionPrompt({ run: inputTurn.run!, userMessage: inputTurn.userPrompt, initial: true });
+    let response: ControlApiJobResponse;
+    let streamedSessionId: string | null = null;
+
+    if (inputTurn.run) {
+      await input.harnessStore?.markRunStatus(inputTurn.run.runId, "running");
+    }
+
+    if (inputTurn.provider === "claude") {
+      if (!input.submitClaudePrompt) {
+        throw new Error("Claude Code is not connected for this bot mode.");
+      }
+      response = await input.submitClaudePrompt({
+        computerId: inputTurn.sourceContext.computerId,
+        queueKey: inputTurn.thread.discordChannelId,
+        payload: {
+          workspaceRoot: inputTurn.thread.workspaceRoot,
+          cwd: inputTurn.thread.cwd,
+          prompt,
+          timeoutMs: resolveAgentPromptTimeoutMs(inputTurn.sourceContext.timeoutMs),
+          controlKey: inputTurn.thread.discordChannelId,
+          sessionId: inputTurn.sourceSessionId,
+          forkSession: inputTurn.forkSession,
+          sessionName: inputTurn.thread.threadName,
+          model: settings.model,
+          effort: settings.effort,
+          harnessBuilder: Boolean(inputTurn.build),
+          ...(inputTurn.run ? { harness: input.harnessStore?.workerBinding(inputTurn.run) } : {}),
+        },
+        onProgress: (event) => {
+          if (event.type === "thread-started") {
+            streamedSessionId = event.sessionId;
+          }
+        },
+      });
+    } else {
+      if (!input.submitCodexPrompt) {
+        throw new Error("Codex is not connected for this bot mode.");
+      }
+      response = await input.submitCodexPrompt({
+        computerId: inputTurn.sourceContext.computerId,
+        queueKey: inputTurn.thread.discordChannelId,
+        payload: {
+          workspaceRoot: inputTurn.thread.workspaceRoot,
+          cwd: inputTurn.thread.cwd,
+          prompt,
+          timeoutMs: resolveAgentPromptTimeoutMs(inputTurn.sourceContext.timeoutMs),
+          controlKey: inputTurn.thread.discordChannelId,
+          sessionId: inputTurn.sourceSessionId,
+          forkSession: inputTurn.forkSession,
+          sessionName: inputTurn.thread.threadName,
+          model: settings.model,
+          reasoningEffort: agentSettingsController.codexReasoningEffort(
+            inputTurn.settingsChannelId,
+            inputTurn.sourceContext,
+          ),
+          harnessBuilder: Boolean(inputTurn.build),
+          ...(inputTurn.run ? { harness: input.harnessStore?.workerBinding(inputTurn.run) } : {}),
+        },
+        onProgress: async (event) => {
+          if (event.type === "thread-started") {
+            streamedSessionId = event.sessionId;
+            await input.markDiscordRequestedCodexSession?.(event.sessionId, {
+              discordChannelId: inputTurn.thread.discordChannelId,
+            });
+          }
+        },
+        onApprovalRequest: (request) =>
+          requestCodexApproval(threadReplyWithRoleMentions, inputTurn.thread.discordChannelId, request),
+        onUserInputRequest: (request) =>
+          requestCodexUserInput(
+            threadReply,
+            threadReplyWithRoleMentions,
+            inputTurn.thread.discordChannelId,
+            request,
+          ),
+      });
+    }
+
+    const failure = forkResponseErrorMessage(response, inputTurn.provider === "claude" ? "Claude Code" : "Codex");
+    if (failure) {
+      throw new Error(failure);
+    }
+    const sessionId = extractAgentResponseSessionId(response) ?? streamedSessionId;
+    if (!sessionId) {
+      throw new Error("Harness session provisioning did not return an agent session ID.");
+    }
+    if (
+      inputTurn.forkSession &&
+      inputTurn.sourceSessionId &&
+      sessionId.toLowerCase() === inputTurn.sourceSessionId.toLowerCase()
+    ) {
+      throw new Error("Harness fork returned the original agent session ID.");
+    }
+
+    if (inputTurn.provider === "claude") {
+      if (!input.recordClaudeSession) {
+        throw new Error("Claude Code session persistence is not connected.");
+      }
+      await input.recordClaudeSession({
+        discordChannelId: inputTurn.thread.discordChannelId,
+        claudeSessionId: sessionId,
+      });
+      claudeSessionIdsByChannel.set(inputTurn.thread.discordChannelId, sessionId);
+    } else {
+      if (!input.linkNewCodexSession) {
+        throw new Error("Codex session persistence is not connected.");
+      }
+      await input.linkNewCodexSession({
+        discordChannelId: inputTurn.thread.discordChannelId,
+        codexSessionId: sessionId,
+        threadName: inputTurn.thread.threadName,
+      });
+      codexSessionIdsByChannel.set(inputTurn.thread.discordChannelId, sessionId);
+    }
+
+    if (inputTurn.build) {
+      await input.harnessStore?.bindBuilderSession(inputTurn.build.buildId, sessionId);
+    }
+    if (inputTurn.run) {
+      await input.harnessStore?.bindRunSession(inputTurn.run.runId, sessionId);
+      await input.harnessStore?.markRunStatus(inputTurn.run.runId, "ready");
+    }
+
+    let candidateNotice: string | null = null;
+    if (inputTurn.build) {
+      const prepared = await prepareHarnessBuilderResponseWithRetries({
+        build: inputTurn.build,
+        response,
+        provider: inputTurn.provider,
+        channelContext: inputTurn.sourceContext,
+        settingsChannelId: inputTurn.settingsChannelId,
+        queueKey: inputTurn.thread.discordChannelId,
+        workspaceRoot: inputTurn.thread.workspaceRoot,
+        cwd: inputTurn.thread.cwd,
+        sessionId,
+        sessionName: inputTurn.thread.threadName,
+      });
+      response = prepared.response;
+      candidateNotice = prepared.notice;
+    }
+    const finalMessage = extractAgentResponseFinalMessage(response)?.trim() ?? "";
+
+    return {
+      sessionId,
+      visibleMessage: stripHarnessBuilderBlocks(finalMessage) ||
+        (inputTurn.build ? "Harness Builder가 준비되었습니다. 이어서 원하는 workflow를 설명해 주세요." : "하네스가 준비되었습니다."),
+      candidateNotice,
+    };
+  }
+
+  async function createHarnessSessionThread(inputCreate: {
+    message: DiscordMessageLike;
+    context: ManagedDiscordChannelContext;
+    sourceMode: HarnessSourceMode;
+    sourceChannelId: string;
+    sourceSessionId: string | null;
+    name: string;
+  }): Promise<NewCodexChatResult> {
+    if (!inputCreate.message.guild) {
+      throw new Error("Discord guild context is required for harness sessions.");
+    }
+    if (inputCreate.sourceMode === "current") {
+      if (!inputCreate.sourceSessionId) {
+        throw new Error("현재 Discord 스레드에 연결된 agent session ID가 없습니다.");
+      }
+      if (!input.createForkedSessionThread) {
+        throw new Error("Harness session fork is supported only in direct mode.");
+      }
+      return input.createForkedSessionThread({
+        guild: inputCreate.message.guild,
+        sourceDiscordChannelId: inputCreate.sourceChannelId,
+        sourceSessionId: inputCreate.sourceSessionId,
+        name: inputCreate.name,
+      });
+    }
+
+    if (!input.createNewCodexChat) {
+      throw new Error("Fresh harness session creation is supported only in direct mode.");
+    }
+    return input.createNewCodexChat({
+      guild: inputCreate.message.guild,
+      name: inputCreate.name,
+      cwd: ".",
+      currentCwd: inputCreate.context.cwd,
+      useCategory: true,
+      initialPrompt: null,
+      channelMode: inputCreate.context.channelMode === "claude-code" ? "claude-code" : "session-linked",
+      sessionThreadParentChannelId:
+        inputCreate.context.discordDeliveryMode === "thread"
+          ? inputCreate.context.discordParentChannelId ?? null
+          : inputCreate.sourceChannelId,
+    });
+  }
+
+  async function startPublishedHarnessRun(inputRun: {
+    message: DiscordMessageLike;
+    invocationContext: ManagedDiscordChannelContext;
+    published: PublishedHarnessVersionState;
+    sourceMode: HarnessSourceMode;
+    sourceChannelId?: string | null;
+    sourceSessionId?: string | null;
+    name?: string | null;
+    prompt?: string | null;
+    reply: DiscordMessageLike["reply"];
+    replyWithRoleMentions: DiscordMessageLike["reply"];
+  }): Promise<HarnessRunState> {
+    if (!input.harnessStore) {
+      throw new Error("Harness is unavailable in this bot mode.");
+    }
+    const sourceChannelId = inputRun.sourceChannelId ?? inputRun.message.channelId;
+    const sourceContext = sourceChannelId === inputRun.message.channelId
+      ? inputRun.invocationContext
+      : await input.resolveChannelContext(sourceChannelId);
+    if (!sourceContext) {
+      throw new Error("Harness run source Discord session no longer exists.");
+    }
+    const provider = harnessProvider(sourceContext);
+    if (!provider) {
+      throw new Error("Harness는 Codex 또는 Claude Code 채널에서만 실행할 수 있습니다.");
+    }
+    if (!inputRun.published.manifest.providers.includes(provider)) {
+      throw new Error(`${inputRun.published.harnessVersionId}은 ${provider} provider를 지원하지 않습니다.`);
+    }
+    const currentSourceSessionId = inputRun.sourceMode === "current"
+      ? channelAgentSessionId(sourceChannelId, sourceContext, provider)
+      : null;
+    if (
+      inputRun.sourceMode === "current" &&
+      inputRun.sourceSessionId &&
+      currentSourceSessionId?.toLowerCase() !== inputRun.sourceSessionId.toLowerCase()
+    ) {
+      throw new Error("원본 agent session이 build 이후 변경되어 harness run을 중단했습니다.");
+    }
+    const exactSourceSessionId = inputRun.sourceMode === "current"
+      ? inputRun.sourceSessionId ?? currentSourceSessionId
+      : null;
+    const thread = await createHarnessSessionThread({
+      message: inputRun.message,
+      context: sourceContext,
+      sourceMode: inputRun.sourceMode,
+      sourceChannelId,
+      sourceSessionId: exactSourceSessionId,
+      name: inputRun.name?.trim() || `🧰 ${inputRun.published.harnessId} ${inputRun.published.version}`,
+    });
+    let run: HarnessRunState | null = null;
+    let provisioningReply: DiscordReplyLike | void = undefined;
+
+    try {
+      run = await input.harnessStore.createRun({
+        provider,
+        published: inputRun.published,
+        sourceMode: inputRun.sourceMode,
+        sourceDiscordChannelId: inputRun.sourceMode === "current" ? sourceChannelId : null,
+        sourceAgentSessionId: exactSourceSessionId,
+        executionDiscordChannelId: thread.discordChannelId,
+      });
+      provisioningReply = await inputRun.reply(
+        `⏳ 하네스 실행 스레드를 만들었습니다: <#${thread.discordChannelId}>\n` +
+        "Agent session을 연결하고 있습니다. 실행 스레드에서 진행 상황을 바로 확인할 수 있습니다.",
+      );
+      const provisioned = await submitProvisionedHarnessTurn({
+        provider,
+        thread,
+        guild: inputRun.message.guild!,
+        settingsChannelId: sourceChannelId,
+        sourceSessionId: exactSourceSessionId,
+        forkSession: inputRun.sourceMode === "current",
+        sourceContext,
+        run,
+        userPrompt: inputRun.prompt ?? "",
+        reply: inputRun.reply,
+        replyWithRoleMentions: inputRun.replyWithRoleMentions,
+      });
+      await inputRun.message.guild?.sendTextMessage?.(
+        thread.discordChannelId,
+        `${formatHarnessRunReady({ ...run, executionAgentSessionId: provisioned.sessionId, status: "ready" })}\n\n${provisioned.visibleMessage}`,
+        { mentionRoleIds: sourceContext.allowedRoleIds },
+      );
+      await updateQueuedReply(
+        provisioningReply,
+        inputRun.reply,
+        `✅ 하네스 실행 스레드가 준비됐습니다: <#${thread.discordChannelId}>`,
+      );
+      return { ...run, executionAgentSessionId: provisioned.sessionId, status: "ready" };
+    } catch (error) {
+      if (run) {
+        await input.harnessStore.markRunStatus(
+          run.runId,
+          "failed",
+          error instanceof Error ? error.message : String(error),
+        );
+        await input.harnessStore.removeChannelBinding(thread.discordChannelId);
+      }
+      if (inputRun.message.guild && input.discardForkedSessionThread) {
+        await input.discardForkedSessionThread({
+          guild: inputRun.message.guild,
+          discordChannelId: thread.discordChannelId,
+        }).catch(() => false);
+      }
+      if (provisioningReply) {
+        await updateQueuedReply(
+          provisioningReply,
+          inputRun.reply,
+          `❌ 하네스 실행 준비에 실패했습니다: ${error instanceof Error ? error.message : String(error)}`,
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  async function handleHarnessCommand(
+    message: DiscordMessageLike,
+    channelContext: ManagedDiscordChannelContext,
+    request: HarnessCommandRequest,
+    reply: DiscordMessageLike["reply"],
+    replyWithRoleMentions: DiscordMessageLike["reply"],
+  ): Promise<void> {
+    const store = input.harnessStore;
+    if (!store) {
+      await reply("이 실행 모드에서는 Harness v2가 활성화되어 있지 않습니다. direct bot/worker 구성을 확인하세요.");
+      return;
+    }
+
+    if (request.action === "list") {
+      await reply(formatHarnessList(await store.listPublished()));
+      return;
+    }
+    const build = await store.buildForChannel(message.channelId);
+    const currentRun = await store.runForChannel(message.channelId);
+
+    if (request.action === "status") {
+      await reply(
+        build
+          ? formatHarnessBuildStatus(build)
+          : currentRun
+            ? formatHarnessRunStatus(currentRun)
+            : "현재 스레드는 harness builder/run에 연결되어 있지 않습니다.",
+      );
+      return;
+    }
+    if (request.action === "leave") {
+      const removed = await store.removeChannelBinding(message.channelId);
+      await reply(removed
+        ? "현재 Discord 스레드의 harness 자동 주입을 해제했습니다. agent session은 종료하지 않았습니다."
+        : "현재 스레드에는 해제할 harness 연결이 없습니다.");
+      return;
+    }
+    if (request.action === "cancel") {
+      if (!build) {
+        await reply("현재 스레드에는 취소할 harness build가 없습니다.");
+        return;
+      }
+      await store.cancelBuild(build.buildId);
+      await reply("Harness build를 취소했습니다. Builder agent session에는 종료 신호를 보내지 않았습니다.");
+      return;
+    }
+
+    if (request.action === "create") {
+      const provider = harnessProvider(channelContext);
+      if (!provider) {
+        throw new Error("Harness Builder는 Codex 또는 Claude Code 채널에서만 만들 수 있습니다.");
+      }
+      const sourceMode = request.source ?? "current";
+      const sourceSessionId = sourceMode === "current"
+        ? channelAgentSessionId(message.channelId, channelContext, provider)
+        : null;
+      const thread = await createHarnessSessionThread({
+        message,
+        context: channelContext,
+        sourceMode,
+        sourceChannelId: message.channelId,
+        sourceSessionId,
+        name: request.name?.trim() || "Harness Builder",
+      });
+      let newBuild: HarnessBuildState | null = null;
+      let provisioningReply: DiscordReplyLike | void = undefined;
+
+      try {
+        newBuild = await store.createBuild({
+          provider,
+          sourceMode,
+          goal: request.prompt,
+          sourceDiscordChannelId: sourceMode === "current" ? message.channelId : null,
+          sourceAgentSessionId: sourceSessionId,
+          builderDiscordChannelId: thread.discordChannelId,
+        });
+        provisioningReply = await reply(
+          `⏳ Harness Builder 스레드를 만들었습니다: <#${thread.discordChannelId}>\n` +
+          "Agent session을 연결하고 첫 질문을 준비하고 있습니다.",
+        );
+        const provisioned = await submitProvisionedHarnessTurn({
+          provider,
+          thread,
+          guild: message.guild!,
+          settingsChannelId: message.channelId,
+          sourceSessionId,
+          forkSession: sourceMode === "current",
+          sourceContext: channelContext,
+          build: newBuild,
+          userPrompt: request.prompt ?? "",
+          reply,
+          replyWithRoleMentions,
+        });
+        const refreshed = await store.buildForChannel(thread.discordChannelId) ?? newBuild;
+        await message.guild?.sendTextMessage?.(
+          thread.discordChannelId,
+          formatHarnessBuilderNotice([
+            `🧩 **Harness Builder** · ${sourceMode === "current" ? "원본 세션에서 fork" : "새 세션"}`,
+            `Build: \`${newBuild.buildId}\` · Agent session: \`${provisioned.sessionId}\``,
+            "",
+            formatHarnessBuilderGuide(sourceMode),
+            "",
+            provisioned.visibleMessage,
+            provisioned.candidateNotice,
+            "",
+            formatHarnessBuildStatus(refreshed),
+          ].filter(Boolean).join("\n"), refreshed),
+          { mentionRoleIds: channelContext.allowedRoleIds },
+        );
+        await updateQueuedReply(
+          provisioningReply,
+          reply,
+          `✅ Harness Builder 스레드가 준비됐습니다: <#${thread.discordChannelId}>`,
+        );
+      } catch (error) {
+        if (newBuild) {
+          await store.cancelBuild(newBuild.buildId, error instanceof Error ? error.message : String(error));
+        }
+        if (message.guild && input.discardForkedSessionThread) {
+          await input.discardForkedSessionThread({
+            guild: message.guild,
+            discordChannelId: thread.discordChannelId,
+          }).catch(() => false);
+        }
+        if (provisioningReply) {
+          await updateQueuedReply(
+            provisioningReply,
+            reply,
+            `❌ Harness Builder 준비에 실패했습니다: ${error instanceof Error ? error.message : String(error)}`,
+          ).catch(() => undefined);
+        }
+        throw error;
+      }
+      return;
+    }
+
+    if (request.action === "publish" || request.action === "publish-run") {
+      if (!build) {
+        throw new Error("발행은 Harness Builder 스레드에서 실행하세요.");
+      }
+      const published = build.status === "published" && build.publishedVersionId
+        ? (await store.listPublished()).find(
+            (entry) => entry.harnessVersionId === build.publishedVersionId,
+          ) ?? null
+        : await store.publishBuild(build.buildId);
+      if (!published) {
+        throw new Error("이미 발행된 Harness 버전을 찾을 수 없습니다. 상태를 확인하세요.");
+      }
+      await reply(formatHarnessPublished(published));
+      if (request.action === "publish-run") {
+        await startPublishedHarnessRun({
+          message,
+          invocationContext: channelContext,
+          published,
+          sourceMode: request.source ?? build.sourceMode,
+          sourceChannelId: (request.source ?? build.sourceMode) === "current"
+            ? build.sourceDiscordChannelId
+            : message.channelId,
+          sourceSessionId: (request.source ?? build.sourceMode) === "current"
+            ? build.sourceAgentSessionId
+            : null,
+          name: request.name,
+          prompt: request.prompt,
+          reply,
+          replyWithRoleMentions,
+        });
+      }
+      return;
+    }
+
+    if (request.action === "run") {
+      let published: PublishedHarnessVersionState | null = null;
+      if (request.harnessId) {
+        published = await store.resolvePublished(request.harnessId, request.version);
+      } else if (build?.publishedVersionId) {
+        published = (await store.listPublished()).find(
+          (entry) => entry.harnessVersionId === build.publishedVersionId,
+        ) ?? null;
+      } else if (currentRun) {
+        published = await store.resolvePublished(currentRun.harnessId, request.version);
+      }
+      if (!published) {
+        throw new Error("실행할 발행 harness를 찾을 수 없습니다. harness id와 version을 확인하세요.");
+      }
+      await startPublishedHarnessRun({
+        message,
+        invocationContext: channelContext,
+        published,
+        sourceMode: request.source ?? "fresh",
+        name: request.name,
+        prompt: request.prompt,
+        reply,
+        replyWithRoleMentions,
+      });
+    }
   }
 
   async function tryAutoSteerAgentTurn(
@@ -1483,6 +2368,21 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
 
     const routed = routeMessage(message, channelContext);
+
+    if (routed.type === "harness-command") {
+      try {
+        await handleHarnessCommand(
+          message,
+          channelContext,
+          routed.request,
+          reply,
+          replyWithRoleMentions,
+        );
+      } catch (error) {
+        await reply(`Harness 작업 실패: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
 
     if (routed.type === "queue-prompt") {
       await processDiscordMessage({ ...message, content: routed.content });
@@ -2181,6 +3081,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       const sourceSessionId = isClaudeFork
         ? claudeSessionIdsByChannel.get(message.channelId) ?? channelContext.claudeSessionId ?? null
         : codexSessionIdsByChannel.get(message.channelId) ?? channelContext.codexSessionId ?? null;
+      const sourceHarnessBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? null;
+      const sourceHarnessRun = await input.harnessStore?.runForChannel(message.channelId) ?? null;
 
       const queuedReply = await reply(
         formatForkSessionAck({
@@ -2190,6 +3092,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         }),
       );
       let forkThread: NewCodexChatResult | null = null;
+      let forkHarnessBuild: HarnessBuildState | null = null;
+      let forkHarnessRun: HarnessRunState | null = null;
       const activeForkSessionIds = new Set<string>();
 
       const trackActiveForkSession = (sessionId: string) => {
@@ -2222,22 +3126,71 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           name: routed.name,
         });
 
+        if (sourceHarnessBuild && input.harnessStore) {
+          forkHarnessBuild = await input.harnessStore.createBuild({
+            provider: sourceHarnessBuild.provider,
+            sourceMode: "current",
+            goal: sourceHarnessBuild.goal,
+            sourceDiscordChannelId: message.channelId,
+            sourceAgentSessionId: sourceSessionId,
+            builderDiscordChannelId: forkThread.discordChannelId,
+          });
+          forkHarnessBuild = await input.harnessStore.cloneBuildCandidate(
+            sourceHarnessBuild.buildId,
+            forkHarnessBuild.buildId,
+          );
+        } else if (sourceHarnessRun && input.harnessStore) {
+          const published = (await input.harnessStore.listPublished()).find(
+            (entry) =>
+              entry.harnessVersionId === sourceHarnessRun.harnessVersionId &&
+              entry.snapshotDigest === sourceHarnessRun.snapshotDigest,
+          );
+          if (!published) {
+            throw new Error("현재 실행 스레드에 고정된 immutable harness snapshot을 찾을 수 없습니다.");
+          }
+          forkHarnessRun = await input.harnessStore.createRun({
+            provider: sourceHarnessRun.provider,
+            published,
+            sourceMode: "current",
+            sourceDiscordChannelId: message.channelId,
+            sourceAgentSessionId: sourceSessionId,
+            executionDiscordChannelId: forkThread.discordChannelId,
+          });
+          await input.harnessStore.markRunStatus(forkHarnessRun.runId, "running");
+        }
+
         let forkSessionId: string | null = null;
         let finalMessage: string | null = null;
+        let candidateNotice: string | null = null;
+        const forkPrompt = forkHarnessBuild
+          ? harnessBuilderPrompt({
+              build: forkHarnessBuild,
+              userMessage: `원본 Harness Builder에서 '${routed.name}' 분기로 이어서 설계하세요.`,
+              initial: true,
+            })
+          : forkHarnessRun
+            ? harnessExecutionPrompt({
+                run: forkHarnessRun,
+                userMessage: `원본 하네스 실행에서 '${routed.name}' 분기로 작업을 이어가세요.`,
+                initial: true,
+              })
+            : isClaudeFork
+              ? claudeForkPrompt(routed.name)
+              : codexForkPrompt(routed.name);
 
         if (isClaudeFork) {
           if (!input.submitClaudePrompt) {
             throw new Error("Claude Code is not connected for this bot mode.");
           }
 
-          const response = await input.submitClaudePrompt({
+          let response = await input.submitClaudePrompt({
             computerId: channelContext.computerId,
             ...(message.requestId ? { requestId: message.requestId } : {}),
             queueKey: forkThread.discordChannelId,
             payload: {
               workspaceRoot: forkThread.workspaceRoot,
               cwd: forkThread.cwd,
-              prompt: claudeForkPrompt(routed.name),
+              prompt: forkPrompt,
               timeoutMs: resolveAgentPromptTimeoutMs(channelContext.timeoutMs),
               sessionId: sourceSessionId,
               forkSession: true,
@@ -2245,6 +3198,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               model: agentSettings.model,
               effort: agentSettings.effort,
               controlKey: forkThread.discordChannelId,
+              harnessBuilder: Boolean(forkHarnessBuild),
+              ...(forkHarnessRun ? { harness: input.harnessStore?.workerBinding(forkHarnessRun) } : {}),
             },
           });
 
@@ -2254,8 +3209,6 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }
 
           forkSessionId = extractAgentResponseSessionId(response);
-          finalMessage = extractAgentResponseFinalMessage(response);
-
           if (!forkSessionId) {
             throw new Error("Claude Code fork가 새 session ID를 반환하지 않았습니다.");
           }
@@ -2273,19 +3226,40 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             claudeSessionId: forkSessionId,
           });
           claudeSessionIdsByChannel.set(forkThread.discordChannelId, forkSessionId);
+          if (forkHarnessBuild) {
+            await input.harnessStore?.bindBuilderSession(forkHarnessBuild.buildId, forkSessionId);
+            const prepared = await prepareHarnessBuilderResponseWithRetries({
+              build: forkHarnessBuild,
+              response,
+              provider: "claude",
+              channelContext,
+              settingsChannelId: message.channelId,
+              queueKey: forkThread.discordChannelId,
+              workspaceRoot: forkThread.workspaceRoot,
+              cwd: forkThread.cwd,
+              sessionId: forkSessionId,
+              sessionName: forkThread.threadName,
+            });
+            response = prepared.response;
+            candidateNotice = prepared.notice;
+          }
+          if (forkHarnessRun) {
+            await input.harnessStore?.bindRunSession(forkHarnessRun.runId, forkSessionId);
+          }
+          finalMessage = extractAgentResponseFinalMessage(response);
         } else {
           if (!input.submitCodexPrompt) {
             throw new Error("Codex chat is not connected for this bot mode.");
           }
 
-          const response = await input.submitCodexPrompt({
+          let response = await input.submitCodexPrompt({
             computerId: channelContext.computerId,
             ...(message.requestId ? { requestId: message.requestId } : {}),
             queueKey: forkThread.discordChannelId,
             payload: {
               workspaceRoot: forkThread.workspaceRoot,
               cwd: forkThread.cwd,
-              prompt: codexForkPrompt(routed.name),
+              prompt: forkPrompt,
               timeoutMs: resolveAgentPromptTimeoutMs(channelContext.timeoutMs),
               sessionId: sourceSessionId,
               forkSession: true,
@@ -2293,6 +3267,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               model: agentSettings.model,
               reasoningEffort: agentSettingsController.codexReasoningEffort(message.channelId, channelContext),
               controlKey: forkThread.discordChannelId,
+              harnessBuilder: Boolean(forkHarnessBuild),
+              ...(forkHarnessRun ? { harness: input.harnessStore?.workerBinding(forkHarnessRun) } : {}),
             },
             onProgress: async (event) => {
               if (event.type === "thread-started") {
@@ -2312,8 +3288,6 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }
 
           forkSessionId = extractAgentResponseSessionId(response);
-          finalMessage = extractAgentResponseFinalMessage(response);
-
           if (!forkSessionId) {
             throw new Error("Codex fork가 새 session ID를 반환하지 않았습니다.");
           }
@@ -2332,6 +3306,27 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             threadName: routed.name,
           });
           codexSessionIdsByChannel.set(forkThread.discordChannelId, forkSessionId);
+          if (forkHarnessBuild) {
+            await input.harnessStore?.bindBuilderSession(forkHarnessBuild.buildId, forkSessionId);
+            const prepared = await prepareHarnessBuilderResponseWithRetries({
+              build: forkHarnessBuild,
+              response,
+              provider: "codex",
+              channelContext,
+              settingsChannelId: message.channelId,
+              queueKey: forkThread.discordChannelId,
+              workspaceRoot: forkThread.workspaceRoot,
+              cwd: forkThread.cwd,
+              sessionId: forkSessionId,
+              sessionName: forkThread.threadName,
+            });
+            response = prepared.response;
+            candidateNotice = prepared.notice;
+          }
+          if (forkHarnessRun) {
+            await input.harnessStore?.bindRunSession(forkHarnessRun.runId, forkSessionId);
+          }
+          finalMessage = extractAgentResponseFinalMessage(response);
         }
 
         try {
@@ -2346,6 +3341,19 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             }),
             { mentionRoleIds: channelContext.allowedRoleIds },
           );
+          const harnessForkNotice = [
+            candidateNotice,
+            forkHarnessRun
+              ? formatHarnessRunReady({
+                  ...forkHarnessRun,
+                  status: "ready",
+                  executionAgentSessionId: forkSessionId,
+                })
+              : null,
+          ].filter(Boolean).join("\n\n");
+          if (harnessForkNotice) {
+            await message.guild.sendTextMessage?.(forkThread.discordChannelId, harnessForkNotice);
+          }
         } catch (error) {
           console.warn("discord-bot failed to post the fork thread notice", error);
         }
@@ -2372,6 +3380,20 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }),
         );
       } catch (error) {
+        if (forkHarnessBuild) {
+          await input.harnessStore?.cancelBuild(
+            forkHarnessBuild.buildId,
+            error instanceof Error ? error.message : String(error),
+          ).catch(() => undefined);
+        }
+        if (forkHarnessRun) {
+          await input.harnessStore?.markRunStatus(
+            forkHarnessRun.runId,
+            "failed",
+            error instanceof Error ? error.message : String(error),
+          ).catch(() => undefined);
+          await input.harnessStore?.removeChannelBinding(forkHarnessRun.executionDiscordChannelId).catch(() => false);
+        }
         if (forkThread && message.guild && input.discardForkedSessionThread) {
           codexSessionIdsByChannel.delete(forkThread.discordChannelId);
           claudeSessionIdsByChannel.delete(forkThread.discordChannelId);
@@ -2408,13 +3430,35 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         return;
       }
 
-      const prompt = routed.content;
+      const harnessBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? null;
+      const harnessRun = await input.harnessStore?.runForChannel(message.channelId) ?? null;
+      if (harnessBuild?.status === "published") {
+        await reply("이 Harness Builder는 이미 발행되었습니다. 새 버전은 `/harness create`로 별도 build를 시작하세요.");
+        return;
+      }
+      if (harnessBuild && harnessBuild.provider !== "claude") {
+        await reply("Harness Builder provider와 현재 Discord 채널 provider가 일치하지 않습니다.");
+        return;
+      }
+      if (harnessRun && harnessRun.provider !== "claude") {
+        await reply("Harness Run provider와 현재 Discord 채널 provider가 일치하지 않습니다.");
+        return;
+      }
+      const userPrompt = routed.content;
+      const nativeClaudeCompact = /^\/compact(?:\s|$)/i.test(userPrompt.trim());
+      const prompt = nativeClaudeCompact
+        ? userPrompt
+        : harnessBuild
+          ? harnessBuilderPrompt({ build: harnessBuild, userMessage: userPrompt })
+          : harnessRun
+            ? harnessExecutionPrompt({ run: harnessRun, userMessage: userPrompt })
+            : userPrompt;
       const agentSettings = agentSettingsController.get(message.channelId, channelContext);
       const claudeMessage = {
         computerDisplayName: channelContext.computerDisplayName,
         workspaceDisplayName: channelContext.workspaceDisplayName,
         cwd: channelContext.cwd,
-        prompt,
+        prompt: userPrompt,
         agentLabel: "Claude Code",
       };
 
@@ -2436,6 +3480,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       const progressReporter = createLiveProgressReporter({ message, channelContext, agentLabel: "Claude Code" });
 
       try {
+        if (harnessRun) {
+          await input.harnessStore?.markRunStatus(harnessRun.runId, "running");
+        }
         const response = await input.submitClaudePrompt({
           computerId: channelContext.computerId,
           ...(message.requestId ? { requestId: message.requestId } : {}),
@@ -2449,6 +3496,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             sessionId: streamedSessionId,
             model: agentSettings.model,
             effort: agentSettings.effort,
+            harnessBuilder: Boolean(harnessBuild),
+            ...(harnessRun ? { harness: input.harnessStore?.workerBinding(harnessRun) } : {}),
           },
           onProgress: async (event) => {
             touchChannelActivity(message.channelId);
@@ -2485,6 +3534,19 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
             if (event.type === "agent-message" && event.text?.trim()) {
               latestAgentMessage = event.text.trim();
+              if (harnessBuild) {
+                recentEvents = appendProgressEvent(recentEvents, "하네스 응답 검증 중...");
+                await updateQueuedReply(
+                  queuedReply,
+                  (replyMessage) => reply(replyMessage),
+                  formatAgentProgressUpdate(claudeMessage, {
+                    status: "validating harness",
+                    sessionId: streamedSessionId,
+                    recentEvents,
+                  }),
+                );
+                return;
+              }
             }
 
             const status =
@@ -2527,7 +3589,24 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           });
         }
 
-        const responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+        let responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+        let harnessNotice: string | null = null;
+        if (harnessBuild) {
+          const prepared = await prepareHarnessBuilderResponseWithRetries({
+            build: harnessBuild,
+            response: responseForDisplay,
+            provider: "claude",
+            channelContext,
+            settingsChannelId: message.channelId,
+            queueKey: message.channelId,
+            workspaceRoot: channelContext.workspaceRoot,
+            cwd: channelContext.cwd,
+            sessionId: streamedSessionId,
+            sessionName: null,
+          });
+          responseForDisplay = prepared.response;
+          harnessNotice = prepared.notice;
+        }
         await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
         const responseFailed = promptResponseFailed(response);
 
@@ -2537,6 +3616,20 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             claudeSessionId: streamedSessionId,
           });
           claudeSessionIdsByChannel.set(message.channelId, streamedSessionId);
+          if (harnessBuild) {
+            await input.harnessStore?.bindBuilderSession(harnessBuild.buildId, streamedSessionId);
+          }
+          if (harnessRun) {
+            await input.harnessStore?.bindRunSession(harnessRun.runId, streamedSessionId);
+          }
+        }
+
+        if (harnessRun) {
+          await input.harnessStore?.markRunStatus(
+            harnessRun.runId,
+            responseFailed ? "failed" : "ready",
+            responseFailed ? extractAgentResponseFinalMessage(responseForDisplay) : null,
+          );
         }
 
         const resultPayload = formatAgentResultUpdate(claudeMessage, responseForDisplay);
@@ -2549,6 +3642,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           terminalPayload: formatAgentResultPosted({ agentLabel: "Claude Code", failed: responseFailed }),
           questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
         });
+        if (harnessNotice && harnessBuild) {
+          const latestBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? harnessBuild;
+          await reply(formatHarnessBuilderNotice(harnessNotice, latestBuild));
+        }
         await sendAgentRelayCallback({
           message,
           relayControlChannelId: input.relayControlChannelId,
@@ -2567,6 +3664,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       } catch (error) {
         await progressReporter.finish();
         const messageText = error instanceof Error ? error.message : "Claude Code prompt failed";
+        if (harnessRun) {
+          await input.harnessStore?.markRunStatus(harnessRun.runId, "failed", messageText);
+        }
         const failedResponse = { error: { message: messageText } };
         const resultPayload = formatAgentResultUpdate(claudeMessage, failedResponse);
         await updateQueuedResultReply({
@@ -2605,13 +3705,32 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         return;
       }
 
-      const prompt = routed.content;
+      const harnessBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? null;
+      const harnessRun = await input.harnessStore?.runForChannel(message.channelId) ?? null;
+      if (harnessBuild?.status === "published") {
+        await reply("이 Harness Builder는 이미 발행되었습니다. 새 버전은 `/harness create`로 별도 build를 시작하세요.");
+        return;
+      }
+      if (harnessBuild && harnessBuild.provider !== "codex") {
+        await reply("Harness Builder provider와 현재 Discord 채널 provider가 일치하지 않습니다.");
+        return;
+      }
+      if (harnessRun && harnessRun.provider !== "codex") {
+        await reply("Harness Run provider와 현재 Discord 채널 provider가 일치하지 않습니다.");
+        return;
+      }
+      const userPrompt = routed.content;
+      const prompt = harnessBuild
+        ? harnessBuilderPrompt({ build: harnessBuild, userMessage: userPrompt })
+        : harnessRun
+          ? harnessExecutionPrompt({ run: harnessRun, userMessage: userPrompt })
+          : userPrompt;
       const agentSettings = agentSettingsController.get(message.channelId, channelContext);
       const codexMessage = {
         computerDisplayName: channelContext.computerDisplayName,
         workspaceDisplayName: channelContext.workspaceDisplayName,
         cwd: channelContext.cwd,
-        prompt,
+        prompt: userPrompt,
         permissionSettings: codexPermissionSettings(),
       };
 
@@ -2631,6 +3750,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       const progressReporter = createLiveProgressReporter({ message, channelContext, agentLabel: "Codex" });
 
       try {
+        if (harnessRun) {
+          await input.harnessStore?.markRunStatus(harnessRun.runId, "running");
+        }
         if (
           channelContext.channelMode === "session-linked" &&
           input.syncTranscriptUpdates &&
@@ -2673,6 +3795,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             model: agentSettings.model,
             reasoningEffort: agentSettingsController.codexReasoningEffort(message.channelId, channelContext),
             controlKey: message.channelId,
+            harnessBuilder: Boolean(harnessBuild),
+            ...(harnessRun ? { harness: input.harnessStore?.workerBinding(harnessRun) } : {}),
           },
           onProgress: async (event) => {
             touchChannelActivity(message.channelId);
@@ -2717,6 +3841,19 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             if (event.type === "agent-message") {
               if (event.text?.trim()) {
                 latestAgentMessage = event.text.trim();
+              }
+              if (harnessBuild) {
+                recentEvents = appendProgressEvent(recentEvents, "하네스 응답 검증 중...");
+                await updateQueuedReply(
+                  queuedReply,
+                  (replyMessage) => reply(replyMessage),
+                  formatAgentProgressUpdate(codexMessage, {
+                    status: "validating harness",
+                    sessionId: streamedSessionId,
+                    recentEvents,
+                  }),
+                );
+                return;
               }
               recentEvents = appendProgressEvent(recentEvents, readableProgressEvent(event));
               await progressReporter.publish(event);
@@ -2780,6 +3917,23 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         }
 
         let responseForDisplay = withAgentMessageFallback(response, latestAgentMessage);
+        let harnessNotice: string | null = null;
+        if (harnessBuild) {
+          const prepared = await prepareHarnessBuilderResponseWithRetries({
+            build: harnessBuild,
+            response: responseForDisplay,
+            provider: "codex",
+            channelContext,
+            settingsChannelId: message.channelId,
+            queueKey: message.channelId,
+            workspaceRoot: channelContext.workspaceRoot,
+            cwd: channelContext.cwd,
+            sessionId: streamedSessionId,
+            sessionName: null,
+          });
+          responseForDisplay = prepared.response;
+          harnessNotice = prepared.notice;
+        }
         await progressReporter.finish(extractAgentResponseFinalMessage(responseForDisplay));
 
         if (nextSessionId && input.resolveCodexGoalStatus && !isIntermediateAgentResult(responseForDisplay)) {
@@ -2812,6 +3966,12 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           if (routed.type === "codex-chat") {
             codexSessionIdsByChannel.set(message.channelId, streamedSessionId);
           }
+          if (harnessBuild) {
+            await input.harnessStore?.bindBuilderSession(harnessBuild.buildId, streamedSessionId);
+          }
+          if (harnessRun) {
+            await input.harnessStore?.bindRunSession(harnessRun.runId, streamedSessionId);
+          }
         }
 
         if (
@@ -2828,6 +3988,13 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         }
 
         const responseFailed = promptResponseFailed(response);
+        if (harnessRun) {
+          await input.harnessStore?.markRunStatus(
+            harnessRun.runId,
+            responseFailed ? "failed" : "ready",
+            responseFailed ? extractAgentResponseFinalMessage(responseForDisplay) : null,
+          );
+        }
         const resultPayload = formatAgentResultUpdate(codexMessage, responseForDisplay);
         const questionMentionSent = await updateQueuedResultReply({
           message,
@@ -2842,6 +4009,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           }),
           questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
         });
+        if (harnessNotice && harnessBuild) {
+          const latestBuild = await input.harnessStore?.buildForChannel(message.channelId) ?? harnessBuild;
+          await reply(formatHarnessBuilderNotice(harnessNotice, latestBuild));
+        }
         await sendAgentRelayCallback({
           message,
           relayControlChannelId: input.relayControlChannelId,
@@ -2887,6 +4058,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         }
 
         const messageText = error instanceof Error ? error.message : "Codex prompt failed";
+        if (harnessRun) {
+          await input.harnessStore?.markRunStatus(harnessRun.runId, "failed", messageText);
+        }
         const failedResponse = { error: { message: messageText } };
         const resultPayload = formatAgentResultUpdate(codexMessage, failedResponse);
         await updateQueuedResultReply({

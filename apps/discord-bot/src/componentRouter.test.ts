@@ -121,6 +121,11 @@ describe("routeDiscordComponent", () => {
     expect(routeDiscordComponent("cdc:reload:commands")).toBe("reload commands");
     expect(routeDiscordComponent("cdc:reload:restart:confirm")).toBe("reload restart confirm");
     expect(routeDiscordComponent("cdc:reload:restart:force:confirm")).toBe("reload restart force confirm");
+    expect(routeDiscordComponent("cdc:harness:recommend")).toContain("안전한 기본값을 추천");
+    expect(routeDiscordComponent("cdc:harness:approve")).toContain("설계 그대로 하네스를 만들어줘");
+    expect(decodeURIComponent(routeDiscordComponent("cdc:harness:publish") ?? "")).toContain('"action":"publish"');
+    expect(decodeURIComponent(routeDiscordComponent("cdc:harness:publish-run") ?? "")).toContain('"action":"publish-run"');
+    expect(decodeURIComponent(routeDiscordComponent("cdc:harness:status") ?? "")).toContain('"action":"status"');
   });
 
   it("maps selected Codex session ids into a selected sync request", () => {

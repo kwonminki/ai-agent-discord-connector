@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { DiscoveredCodexSession } from "../../../packages/codex-adapter/src/index.js";
 import { notifyCodexTaskCompletions } from "./codexTaskNotifications.js";
 import { createDirectSyncStateStore } from "./directState.js";
+import type { DiscordMessagePayload } from "./responses.js";
 
 function session(input: {
   id?: string;
@@ -17,6 +18,7 @@ function session(input: {
   realtimeAssistantAnswer?: string;
   realtimeEvents?: DiscoveredCodexSession["realtimeEvents"];
   goalStatus?: DiscoveredCodexSession["goalStatus"];
+  forkedFromId?: string;
 }): DiscoveredCodexSession {
   const realtimeEvents = [
     ...(input.realtimeEvents ?? []),
@@ -38,6 +40,7 @@ function session(input: {
     threadName: input.threadName ?? "Build feature",
     updatedAt: input.updatedAt ?? "2026-04-24T01:00:00.000Z",
     cwdHint: input.cwdHint ?? "/repo",
+    ...(input.forkedFromId ? { forkedFromId: input.forkedFromId } : {}),
     ...(input.goalStatus ? { goalStatus: input.goalStatus } : {}),
     contextPreview: input.assistantAnswer
       ? [{ role: "assistant" as const, text: input.assistantAnswer }]
@@ -562,7 +565,7 @@ describe("notifyCodexTaskCompletions", () => {
     }
   });
 
-  it("attaches long answers to completion notifications", async () => {
+  it("splits long answers across ordered completion notifications", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-task-notifications-"));
     const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
     const sendTextMessage = vi.fn().mockResolvedValue(undefined);
@@ -583,30 +586,22 @@ describe("notifyCodexTaskCompletions", () => {
         sessions: [session({ completionKey: "complete-2", assistantAnswer: longAnswer })],
       });
 
-      expect(sendTextMessage).toHaveBeenCalledTimes(2);
-      const answerPayload = sendTextMessage.mock.calls[0]?.[1];
-      const filePayload = sendTextMessage.mock.calls[1]?.[1];
+      expect(sendTextMessage.mock.calls.length).toBeGreaterThan(2);
+      const answerPayloads = sendTextMessage.mock.calls.map((call) => call[1] as DiscordMessagePayload);
+      const answerPayload = answerPayloads[0];
       expect(answerPayload).toMatchObject({
         embeds: [
           {
             title: "답변",
-            description: expect.stringContaining("전체 답변은 첨부 파일"),
+            description: expect.stringContaining("요약"),
           },
         ],
       });
-      expect(answerPayload.files).toBeUndefined();
-      expect(filePayload).toMatchObject({
-        embeds: [],
-        files: [
-          {
-            name: "codex-answer.txt",
-          },
-        ],
-      });
-      expect(filePayload.content).toBeUndefined();
-      expect(answerPayload.embeds[0].description.length).toBeLessThanOrEqual(3_800);
-      expect(Buffer.isBuffer(filePayload.files[0].attachment)).toBe(true);
-      expect(filePayload.files[0].attachment.toString("utf8")).toBe(longAnswer.trim());
+      expect(answerPayloads.every((payload) => payload.files === undefined)).toBe(true);
+      expect(answerPayloads.slice(1).every((payload) => payload.embeds[0]?.title === "답변 (계속)")).toBe(true);
+      expect(answerPayloads.every((payload) => (payload.embeds[0]?.description?.length ?? 0) <= 3_800)).toBe(true);
+      expect(answerPayloads.flatMap((payload) => payload.embeds.map((embed) => embed.description ?? "")).join("\n"))
+        .toContain("긴 답변입니다.");
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -1020,6 +1015,153 @@ describe("notifyCodexTaskCompletions", () => {
 
       expect(sendTextMessage).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(sendTextMessage.mock.calls[0]?.[1])).toContain("다음 IDE 턴의 최종 답변입니다.");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("baselines copied completion events while an explicit fork owns the new session", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-task-pending-fork-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const sendTextMessage = vi.fn().mockResolvedValue(undefined);
+    const createThread = vi.fn().mockResolvedValue({ id: "unexpected-thread" });
+    const controlApi = {
+      createManagedChannel: vi.fn().mockResolvedValue({}),
+      linkCodexSession: vi.fn().mockResolvedValue({}),
+    };
+
+    try {
+      await notifyCodexTaskCompletions({
+        guild: { sendTextMessage, createThread },
+        stateStore,
+        adminChannelId: "admin-channel",
+        sessions: [],
+      });
+      const initialized = await stateStore.read();
+      await stateStore.write({
+        ...initialized,
+        sessionChannels: [{
+          codexSessionId: null,
+          threadName: "Harness Builder",
+          updatedAt: "2026-09-05T19:23:10.687Z",
+          cwd: "/repo",
+          workspaceRoot: "/repo",
+          workspaceDisplayName: "repo",
+          discordCategoryId: null,
+          discordChannelId: "pending-fork-thread",
+          discordParentChannelId: "admin-channel",
+          discordDeliveryMode: "thread",
+          channelMode: "session-linked",
+          pendingForkSourceDiscordChannelId: "source-thread",
+          pendingForkSourceSessionId: "source-session",
+          channelName: "harness-builder",
+          computerId: "local-dev",
+          workspaceId: "local-dev:/repo",
+        }],
+      });
+
+      await expect(notifyCodexTaskCompletions({
+        guild: { sendTextMessage, createThread },
+        controlApi,
+        stateStore,
+        adminChannelId: "admin-channel",
+        computerId: "local-dev",
+        defaultWorkspaceRoot: "/repo",
+        sessions: [session({
+          id: "fork-session",
+          forkedFromId: "source-session",
+          completionKey: "copied-source-completion",
+          assistantAnswer: "원본 세션의 과거 답변",
+        })],
+      })).resolves.toMatchObject({
+        completedSessions: 1,
+        notifiedSessions: 0,
+      });
+
+      expect(createThread).not.toHaveBeenCalled();
+      expect(sendTextMessage).not.toHaveBeenCalled();
+      expect(controlApi.linkCodexSession).not.toHaveBeenCalled();
+      await expect(stateStore.read()).resolves.toMatchObject({
+        sessionChannels: [expect.objectContaining({
+          discordChannelId: "pending-fork-thread",
+          codexSessionId: null,
+        })],
+        taskCompletionNotifications: [expect.objectContaining({
+          sessionId: "fork-session",
+          lastTaskCompleteEventKey: "copied-source-completion",
+          notifiedAt: null,
+        })],
+      });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the linked session thread when a requested fork channel was deleted", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-task-stale-request-channel-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const sendTextMessage = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      await notifyCodexTaskCompletions({
+        guild: { sendTextMessage },
+        stateStore,
+        adminChannelId: "admin-channel",
+        sessions: [],
+      });
+      const initialized = await stateStore.read();
+      await stateStore.write({
+        ...initialized,
+        sessionChannels: [{
+          codexSessionId: "fork-session",
+          threadName: "Recovered Harness Builder",
+          updatedAt: "2026-09-05T19:23:11.274Z",
+          cwd: "/repo",
+          workspaceRoot: "/repo",
+          workspaceDisplayName: "repo",
+          discordCategoryId: null,
+          discordChannelId: "linked-fork-thread",
+          discordParentChannelId: "admin-channel",
+          discordDeliveryMode: "thread",
+          channelMode: "session-linked",
+          channelName: "recovered-harness-builder",
+          computerId: "local-dev",
+          workspaceId: "local-dev:/repo",
+        }],
+        discordRequestedCodexSessionRequests: [{
+          sessionId: "fork-session",
+          requestedAt: "2026-09-05T19:23:11.506Z",
+          discordChannelId: "deleted-pending-thread",
+        }],
+      });
+
+      await notifyCodexTaskCompletions({
+        guild: { sendTextMessage },
+        stateStore,
+        adminChannelId: "admin-channel",
+        sessions: [session({
+          id: "fork-session",
+          completionKey: "fork-complete",
+          completionTimestamp: "2026-09-05T19:23:43.458Z",
+          updatedAt: "2026-09-05T19:23:43.458Z",
+          assistantAnswer: "복구된 Builder 답변",
+        })],
+        mentionRoleIds: ["operator-role"],
+      });
+
+      expect(sendTextMessage).toHaveBeenCalledWith(
+        "linked-fork-thread",
+        expect.objectContaining({ content: expect.stringContaining("Codex 작업 완료") }),
+        { mentionRoleIds: ["operator-role"] },
+      );
+      expect(sendTextMessage).not.toHaveBeenCalledWith(
+        "deleted-pending-thread",
+        expect.anything(),
+        expect.anything(),
+      );
+      await expect(stateStore.read()).resolves.toMatchObject({
+        discordRequestedCodexSessionRequests: [],
+      });
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

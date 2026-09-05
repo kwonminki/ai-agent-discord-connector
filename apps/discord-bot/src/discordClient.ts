@@ -21,6 +21,7 @@ import type { AnswerCopyStore } from "./answerCopyStore.js";
 import type { ModelAutocompleteChoice } from "./modelAutocomplete.js";
 import {
   DISCORD_APPLICATION_COMMANDS,
+  isHarnessHelpInteraction,
   registerDiscordApplicationCommands,
   routeDiscordApplicationCommand,
 } from "./applicationCommands.js";
@@ -42,6 +43,7 @@ import {
   parseCwdPickerState,
 } from "./cwdPicker.js";
 import { localizeDiscordModal, localizeDiscordOutgoing } from "./i18n.js";
+import { formatHarnessHelp } from "./harnessPrompts.js";
 import {
   getAnswerCopyText,
   withRoleMentions,
@@ -62,6 +64,10 @@ interface DiscordInteractionEventClient {
 interface DiscordInteractionHandlerOptions {
   isManagedChannel?(channelId: string): boolean | Promise<boolean>;
   modelAutocomplete?(
+    channelId: string,
+    query: string,
+  ): ModelAutocompleteChoice[] | Promise<ModelAutocompleteChoice[]>;
+  harnessAutocomplete?(
     channelId: string,
     query: string,
   ): ModelAutocompleteChoice[] | Promise<ModelAutocompleteChoice[]>;
@@ -652,6 +658,7 @@ function isChatInputCommandInteraction(interaction: unknown): interaction is {
     getString(name: string, required?: boolean): string | null;
     getInteger?(name: string, required?: boolean): number | null;
     getBoolean?(name: string, required?: boolean): boolean | null;
+    getSubcommand?(required?: boolean): string | null;
   };
 } {
   return (
@@ -1168,22 +1175,20 @@ export function attachDiscordInteractionHandler(
         }
 
         const focused = interaction.options.getFocused(true);
-        if (
-          interaction.commandName.toLowerCase() !== "model" ||
-          typeof focused === "string" ||
-          focused.name !== "model"
-        ) {
+        if (typeof focused === "string") {
           await interaction.respond([]);
           return;
         }
 
-        const choices = await options.modelAutocomplete?.(
-          interaction.channelId,
-          String(focused.value),
-        ) ?? [];
+        const commandName = interaction.commandName.toLowerCase();
+        const choices = commandName === "model" && focused.name === "model"
+          ? await options.modelAutocomplete?.(interaction.channelId, String(focused.value)) ?? []
+          : commandName === "harness" && focused.name === "harness"
+            ? await options.harnessAutocomplete?.(interaction.channelId, String(focused.value)) ?? []
+            : [];
         await interaction.respond(choices.slice(0, 25));
       })().catch((error) => {
-        console.error("discord-bot failed to handle model autocomplete", error);
+        console.error("discord-bot failed to handle slash command autocomplete", error);
         void interaction.respond([]).catch(() => undefined);
       });
       return;
@@ -1191,6 +1196,14 @@ export function attachDiscordInteractionHandler(
 
     if (isChatInputCommandInteraction(interaction) && interaction.isChatInputCommand()) {
       void (async () => {
+        if (isHarnessHelpInteraction(interaction)) {
+          await interaction.reply({
+            allowedMentions: { parse: [] },
+            content: formatHarnessHelp(locale),
+          });
+          return;
+        }
+
         if (options.isManagedChannel && !(await shouldHandleInteractionChannel(interaction.channelId, options))) {
           return;
         }

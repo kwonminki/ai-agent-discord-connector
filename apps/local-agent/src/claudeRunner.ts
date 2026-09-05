@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { HarnessWorkerBinding } from "../../../packages/core/src/index.js";
 
 export type ClaudeRunnerProgressEvent =
   | { type: "thread-started"; sessionId: string }
@@ -21,6 +22,8 @@ export interface RunClaudePromptInput {
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
   settings?: string | null;
   persistentSession?: boolean | null;
+  harnessBuilder?: boolean;
+  harness?: HarnessWorkerBinding;
   onProgress?: (event: ClaudeRunnerProgressEvent) => Promise<void> | void;
   signal?: AbortSignal;
 }
@@ -136,6 +139,14 @@ function claudeArgs(input: RunClaudePromptInput): string[] {
   const permissionMode = resolvePermissionMode(input);
   const settings = resolveClaudeSettings(input);
 
+  if (input.harnessBuilder) {
+    args.push("--permission-mode", "plan", "--tools", "Read,Glob,Grep");
+  }
+
+  if (input.harness) {
+    args.push("--plugin-dir", input.harness.snapshotPath);
+  }
+
   if (input.sessionId?.trim()) {
     args.push("--resume", input.sessionId.trim());
   }
@@ -156,7 +167,7 @@ function claudeArgs(input: RunClaudePromptInput): string[] {
     args.push("--effort", input.effort.trim());
   }
 
-  if (permissionMode) {
+  if (permissionMode && !input.harnessBuilder) {
     args.push("--permission-mode", permissionMode);
   }
 
@@ -176,6 +187,14 @@ function claudeUserMessage(content: string): string {
     },
     parent_tool_use_id: null,
   })}\n`;
+}
+
+function claudePrompt(input: RunClaudePromptInput, content: string): string {
+  if (!input.harness || /^\/compact(?:\s|$)/i.test(content.trim())) {
+    return content;
+  }
+
+  return `/cdc-${input.harness.harnessId}:${input.harness.skillName} ${content}`;
 }
 
 function spawnFailure(claudeCommand: string, error: NodeJS.ErrnoException): RunClaudePromptResult {
@@ -499,6 +518,9 @@ function persistentSessionSignature(input: RunClaudePromptInput): string {
     input.effort ?? "",
     input.sessionName?.trim() ?? "",
     resolveClaudeSettings(input) ?? "",
+    input.harnessBuilder === true,
+    input.harness?.snapshotDigest ?? "",
+    input.harness?.snapshotPath ?? "",
   ]);
 }
 
@@ -821,7 +843,7 @@ class PersistentClaudeSession {
         }, input.timeoutMs);
       }
 
-      void this.writeTurnInput(input.prompt).catch((error) => {
+      void this.writeTurnInput(claudePrompt(input, input.prompt)).catch((error) => {
         const message = error instanceof Error ? error.message : "Claude Code input failed.";
         this.disposed = true;
         this.removeFromPool();
@@ -1429,7 +1451,7 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
 
     child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
-    void writeInput(input.prompt).catch((error) => {
+    void writeInput(claudePrompt(input, input.prompt)).catch((error) => {
       stdinFailure = error instanceof Error ? error.message : "Claude Code input failed.";
       child.kill("SIGTERM");
     });

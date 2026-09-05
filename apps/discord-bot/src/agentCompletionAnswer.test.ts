@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 describe("prepareAgentCompletionAnswer", () => {
-  it("sanitizes mentions and attaches a complete copy when the preview is long", () => {
+  it("sanitizes mentions and splits long answers into ordered message descriptions", () => {
     const result = prepareAgentCompletionAnswer({
       agent: "codex",
       answer: `@operator ${"long answer ".repeat(30)}`,
@@ -21,8 +21,10 @@ describe("prepareAgentCompletionAnswer", () => {
 
     expect(result.description).toContain("[at]operator");
     expect(result.clipped).toBe(true);
-    expect(result.files[0]).toMatchObject({ name: "answer.txt" });
-    expect(Buffer.isBuffer(result.files[0]?.attachment)).toBe(true);
+    expect(result.files).toEqual([]);
+    expect(result.continuationDescriptions.length).toBeGreaterThan(1);
+    expect([result.description, ...result.continuationDescriptions].every((chunk) => chunk.length <= 80)).toBe(true);
+    expect([result.description, ...result.continuationDescriptions].join("\n")).toContain("long answer");
   });
 
   it("extracts connector file blocks for either agent notification", async () => {
@@ -46,6 +48,26 @@ describe("prepareAgentCompletionAnswer", () => {
     expect(result.answer).toContain("파일입니다.");
     expect(result.answer).not.toContain("codex-discord-send");
     expect(result.files).toEqual([expect.objectContaining({ attachment: filePath })]);
+  });
+
+  it("never exposes reserved Harness Builder blocks in background completions", () => {
+    const result = prepareAgentCompletionAnswer({
+      agent: "claude",
+      answer: [
+        "설계를 반영했습니다.",
+        "```codex-discord-harness-brief",
+        JSON.stringify({ phase: "ready", internal: "secret" }),
+        "```",
+        "```codex-discord-harness",
+        JSON.stringify({ manifest: { id: "private" }, files: [] }),
+        "```",
+      ].join("\n"),
+      attachmentName: "answer.txt",
+    });
+
+    expect(result.description).toBe("설계를 반영했습니다.");
+    expect(result.answer).not.toContain("codex-discord-harness");
+    expect(result.answer).not.toContain("internal");
   });
 
   it("prepares final survey messages for background completion notifications", () => {

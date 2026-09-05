@@ -485,6 +485,42 @@ describe("attachDiscordInteractionHandler", () => {
     expect(handleMessage).not.toHaveBeenCalled();
   });
 
+  it("returns published Harness choices through native autocomplete", async () => {
+    const handlers = new Map<string, (interaction: unknown) => void>();
+    const client = {
+      on: vi.fn((eventName: string, handler: (interaction: unknown) => void) => {
+        handlers.set(eventName, handler);
+        return client;
+      }),
+    };
+    const handleMessage = vi.fn();
+    const harnessAutocomplete = vi.fn().mockResolvedValue([
+      { name: "safe-review · latest 1.2.0", value: "safe-review" },
+    ]);
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    attachDiscordInteractionHandler(client, handleMessage, {
+      isManagedChannel: vi.fn().mockResolvedValue(true),
+      harnessAutocomplete,
+    });
+    handlers.get("interactionCreate")?.({
+      isAutocomplete: () => true,
+      commandName: "harness",
+      channelId: "codex-thread-1",
+      options: {
+        getFocused: () => ({ name: "harness", value: "safe" }),
+      },
+      respond,
+    });
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalled());
+    expect(harnessAutocomplete).toHaveBeenCalledWith("codex-thread-1", "safe");
+    expect(respond).toHaveBeenCalledWith([
+      { name: "safe-review · latest 1.2.0", value: "safe-review" },
+    ]);
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+
   it("opens short answers in a copyable modal and returns long answers as text files", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "answer-copy-interaction-"));
     const answerCopyStore = createAnswerCopyStore(tempRoot);
@@ -714,6 +750,44 @@ describe("attachDiscordInteractionHandler", () => {
     await vi.waitFor(() => expect(isManagedChannel).toHaveBeenCalledWith("unmanaged-channel"));
     expect(deferReply).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
+    expect(handleMessage).not.toHaveBeenCalled();
+  });
+
+  it("shows Harness help even when the channel has no managed agent session", async () => {
+    const handlers = new Map<string, (interaction: unknown) => void>();
+    const client = {
+      on: vi.fn((eventName: string, handler: (interaction: unknown) => void) => {
+        handlers.set(eventName, handler);
+        return client;
+      }),
+    };
+    const handleMessage = vi.fn().mockResolvedValue(undefined);
+    const isManagedChannel = vi.fn().mockResolvedValue(false);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    attachDiscordInteractionHandler(client, handleMessage, { isManagedChannel });
+    handlers.get("interactionCreate")?.({
+      isChatInputCommand: () => true,
+      commandName: "harness-help",
+      options: {
+        getString: () => null,
+        getInteger: () => null,
+        getBoolean: () => null,
+        getSubcommand: () => null,
+      },
+      user: { id: "discord-user-1" },
+      channelId: "unmanaged-channel",
+      member: { roles: { cache: new Map() } },
+      reply,
+      guild: null,
+    });
+
+    await vi.waitFor(() => expect(reply).toHaveBeenCalled());
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      allowedMentions: { parse: [] },
+      content: expect.stringContaining("**Harness 사용법**"),
+    }));
+    expect(isManagedChannel).not.toHaveBeenCalled();
     expect(handleMessage).not.toHaveBeenCalled();
   });
 

@@ -550,6 +550,81 @@ describe("syncCodexSessionsToDiscord", () => {
     }
   });
 
+  it("does not let background sync claim a session reserved by a pending explicit fork", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-sync-pending-fork-"));
+    const store = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const guild = {
+      createCategory: vi.fn().mockResolvedValue({ id: "category-repo" }),
+      createTextChannel: vi.fn().mockResolvedValue({ id: "unexpected-channel" }),
+      createThread: vi.fn().mockResolvedValue({ id: "unexpected-thread" }),
+    };
+    const controlApi = {
+      createCategoryMapping: vi.fn().mockResolvedValue({}),
+      createManagedChannel: vi.fn().mockResolvedValue({}),
+      linkCodexSession: vi.fn().mockResolvedValue({}),
+    };
+
+    try {
+      await store.write({
+        version: 1,
+        archivedCodexSessionIds: [],
+        workspaces: [],
+        sessionChannels: [{
+          codexSessionId: null,
+          threadName: "Harness Builder",
+          updatedAt: "2026-09-05T19:23:10.687Z",
+          cwd: "/repo",
+          workspaceRoot: "/repo",
+          workspaceDisplayName: "repo",
+          discordCategoryId: null,
+          discordChannelId: "pending-fork-thread",
+          discordParentChannelId: "admin-channel",
+          discordDeliveryMode: "thread",
+          channelMode: "session-linked",
+          pendingForkSourceDiscordChannelId: "source-thread",
+          pendingForkSourceSessionId: "source-session",
+          channelName: "harness-builder",
+          computerId: "local-dev",
+          workspaceId: "local-dev:/repo",
+        }],
+      });
+
+      await expect(syncCodexSessionsToDiscord({
+        guild,
+        controlApi,
+        stateStore: store,
+        computerId: "local-dev",
+        computerDisplayName: "Local Dev",
+        defaultWorkspaceRoot: "/repo",
+        sessions: [{
+          id: "fork-session",
+          threadName: "Harness Builder",
+          updatedAt: "2026-09-05T19:23:11.274Z",
+          cwdHint: "/repo",
+          forkedFromId: "source-session",
+        }],
+        limit: 25,
+      })).resolves.toEqual({
+        createdCategories: 0,
+        existingCategories: 0,
+        createdChannels: 0,
+        existingChannels: 0,
+        skippedSessions: 1,
+      });
+
+      expect(guild.createCategory).not.toHaveBeenCalled();
+      expect(guild.createTextChannel).not.toHaveBeenCalled();
+      expect(guild.createThread).not.toHaveBeenCalled();
+      expect(controlApi.linkCodexSession).not.toHaveBeenCalled();
+      await expect(store.findSessionChannelByDiscordId("pending-fork-thread")).resolves.toMatchObject({
+        codexSessionId: null,
+        pendingForkSourceSessionId: "source-session",
+      });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("creates channels concurrently within the same workspace", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-sync-parallel-"));
     const store = createDirectSyncStateStore(path.join(tempRoot, "state.json"));

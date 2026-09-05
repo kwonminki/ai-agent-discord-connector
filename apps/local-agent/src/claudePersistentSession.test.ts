@@ -158,6 +158,10 @@ describe("persistent Claude Code sessions", () => {
       );
       await chmod(fakeClaude, 0o755);
 
+      let observeTurnEnd!: () => void;
+      const turnEndObserved = new Promise<void>((resolve) => {
+        observeTurnEnd = resolve;
+      });
       const run = runClaudePrompt({
         workspaceRoot: tempRoot,
         cwd: tempRoot,
@@ -166,6 +170,11 @@ describe("persistent Claude Code sessions", () => {
         controlKey: "channel-turn-end",
         claudeCommand: fakeClaude,
         persistentSession: true,
+        onProgress: (event) => {
+          if (event.type === "agent-message" && event.text === "first turn done") {
+            observeTurnEnd();
+          }
+        },
       });
 
       for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -174,6 +183,8 @@ describe("persistent Claude Code sessions", () => {
         }
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
+
+      await turnEndObserved;
 
       await expect(steerActiveClaudeTurn(
         "channel-turn-end",
@@ -296,7 +307,13 @@ describe("persistent Claude Code sessions", () => {
 
       let inputs: Array<{ message: { content: Array<{ text: string }> } }> = [];
       for (let attempt = 0; attempt < 300; attempt += 1) {
-        inputs = JSON.parse(await readFile(fake.inputsPath, "utf8").catch(() => "[]"));
+        const rawInputs = await readFile(fake.inputsPath, "utf8").catch(() => "[]");
+        try {
+          inputs = JSON.parse(rawInputs) as Array<{ message: { content: Array<{ text: string }> } }>;
+        } catch {
+          // The fake CLI replaces this file synchronously; a concurrent read can
+          // briefly observe an empty/truncated file. Poll again in that case.
+        }
         if (inputs.length >= 2) {
           break;
         }

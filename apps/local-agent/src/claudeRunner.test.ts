@@ -323,6 +323,101 @@ describe("runClaudePrompt", () => {
     }
   });
 
+  it("loads the immutable harness plugin and invokes its namespaced skill", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-harness-"));
+    const fakeClaude = path.join(tempRoot, "claude");
+    const argsPath = path.join(tempRoot, "args.json");
+    const inputPath = path.join(tempRoot, "input.json");
+    const snapshotPath = path.join(tempRoot, "published", "reviewer", "1.0.0-deadbeef");
+
+    try {
+      await writeFile(
+        fakeClaude,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          "const readline = require('node:readline');",
+          `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));`,
+          "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'claude-harness-1' }));",
+          "const input = readline.createInterface({ input: process.stdin });",
+          "input.once('line', (line) => {",
+          `  fs.writeFileSync(${JSON.stringify(inputPath)}, line);`,
+          "  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'claude-harness-1', result: 'done' }));",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeClaude, 0o755);
+
+      await expect(runClaudePrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "이 변경을 검토해줘",
+        timeoutMs: 5_000,
+        claudeCommand: fakeClaude,
+        persistentSession: false,
+        harness: {
+          schemaVersion: 1,
+          harnessId: "reviewer",
+          harnessVersionId: "reviewer@1.0.0#deadbeef0000",
+          snapshotDigest: "deadbeef",
+          snapshotPath,
+          runId: "run-1",
+          skillName: "code-reviewer",
+        },
+      })).resolves.toMatchObject({ status: "completed", sessionId: "claude-harness-1" });
+
+      const args = JSON.parse(await readFile(argsPath, "utf8")) as string[];
+      expect(args).toEqual(expect.arrayContaining(["--plugin-dir", snapshotPath]));
+      const inputMessage = JSON.parse(await readFile(inputPath, "utf8")) as {
+        message: { content: Array<{ text: string }> };
+      };
+      expect(inputMessage.message.content[0]?.text).toBe(
+        "/cdc-reviewer:code-reviewer 이 변경을 검토해줘",
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("limits a Harness Builder to read-only Claude tools", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-builder-"));
+    const fakeClaude = path.join(tempRoot, "claude");
+    const argsPath = path.join(tempRoot, "args.json");
+
+    try {
+      await writeFile(
+        fakeClaude,
+        [
+          "#!/usr/bin/env node",
+          "const fs = require('node:fs');",
+          `fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));`,
+          "console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'builder-1', result: 'question' }));",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeClaude, 0o755);
+
+      await runClaudePrompt({
+        workspaceRoot: tempRoot,
+        cwd: tempRoot,
+        prompt: "하네스를 설계해줘",
+        timeoutMs: 5_000,
+        claudeCommand: fakeClaude,
+        harnessBuilder: true,
+      });
+
+      expect(JSON.parse(await readFile(argsPath, "utf8"))).toEqual(expect.arrayContaining([
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "Read,Glob,Grep",
+      ]));
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("passes selected model and effort to Claude Code", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "claude-runner-"));
     const fakeClaude = path.join(tempRoot, "claude");

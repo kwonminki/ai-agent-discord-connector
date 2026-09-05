@@ -1,4 +1,9 @@
-import type { ChannelMode, CommandTier, SessionOrigin } from "../../../packages/core/src/index.js";
+import type {
+  ChannelMode,
+  CommandTier,
+  HarnessWorkerBinding,
+  SessionOrigin,
+} from "../../../packages/core/src/index.js";
 import type {
   CodexApprovalDecision,
   CodexApprovalRequest,
@@ -27,6 +32,8 @@ export interface RunCodexPromptJobPayload {
   model?: string | null;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | null;
   controlKey?: string;
+  harnessBuilder?: boolean;
+  harness?: HarnessWorkerBinding;
 }
 
 export interface CodexTurnControlResult {
@@ -54,6 +61,8 @@ export interface RunClaudePromptJobPayload {
   sessionName?: string | null;
   model?: string | null;
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
+  harnessBuilder?: boolean;
+  harness?: HarnessWorkerBinding;
 }
 
 export type SharedAgentPromptProgressEvent =

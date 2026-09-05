@@ -65,6 +65,18 @@ export function formatClaudeIdleNotification(
 
   registerAnswerCopyText(payload, preparedAnswer.answer);
 
+  appendAgentResultContinuationMessages(
+    payload,
+    preparedAnswer.continuationDescriptions.map((description) => ({
+      allowedMentions: { parse: [] },
+      embeds: [{
+        title: "알림 내용 (계속)",
+        color: agent === "codex" ? CODEX_ANSWER_EMBED_COLOR : CLAUDE_ANSWER_EMBED_COLOR,
+        description,
+      }],
+    })),
+  );
+
   if (preparedAnswer.files.length > 0) {
     appendAgentResultContinuationMessages(payload, discordFileOnlyPayloads(preparedAnswer.files));
   }

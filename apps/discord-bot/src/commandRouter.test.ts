@@ -3,6 +3,39 @@ import { describe, expect, it } from "vitest";
 import { routeDiscordMessage } from "./commandRouter.js";
 
 describe("routeDiscordMessage", () => {
+  it("routes only authorized encoded Harness actions", () => {
+    const content = `__cdc_harness ${encodeURIComponent(JSON.stringify({
+      action: "run",
+      source: "fresh",
+      harnessId: "safe-review",
+      version: "1.2.0",
+      prompt: "현재 변경을 리뷰해줘",
+    }))}`;
+
+    expect(routeDiscordMessage({
+      channelMode: "session-linked",
+      content,
+      userRoleIds: ["role-operator"],
+      allowedRoleIds: ["role-operator"],
+    })).toEqual({
+      type: "harness-command",
+      request: {
+        action: "run",
+        source: "fresh",
+        name: null,
+        harnessId: "safe-review",
+        version: "1.2.0",
+        prompt: "현재 변경을 리뷰해줘",
+      },
+    });
+    expect(routeDiscordMessage({
+      channelMode: "session-linked",
+      content,
+      userRoleIds: ["role-viewer"],
+      allowedRoleIds: ["role-operator"],
+    })).toEqual({ type: "denied", reason: "User does not have an allowed role" });
+  });
+
   it("routes a bare shell-admin command to execute-command", () => {
     expect(
       routeDiscordMessage({

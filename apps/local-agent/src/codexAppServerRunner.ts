@@ -960,6 +960,7 @@ const CODEX_AUTO_COMPACT_COOLDOWN_MS = 5 * 60_000;
 const CODEX_AUTO_COMPACT_TIMEOUT_MS = 5 * 60_000;
 const codexAutoCompactLastRunByThread = new Map<string, number>();
 const codexAutoCompactInFlightThreads = new Set<string>();
+const codexAutoCompactTasksByThread = new Map<string, Promise<void>>();
 let codexIdleNotificationSink: CodexSessionIdleNotificationSink | null = null;
 
 export interface CodexThreadTokenUsage {
@@ -1045,7 +1046,7 @@ function maybeStartDetachedCodexCompaction(input: {
   codexAutoCompactInFlightThreads.add(threadId);
   codexAutoCompactLastRunByThread.set(threadId, Date.now());
 
-  void runDetachedCodexCompaction({
+  const compactTask = runDetachedCodexCompaction({
     serverUrl: input.serverUrl,
     threadId,
     cwd: input.cwd,
@@ -1072,7 +1073,13 @@ function maybeStartDetachedCodexCompaction(input: {
     })
     .finally(() => {
       codexAutoCompactInFlightThreads.delete(threadId);
+      if (codexAutoCompactTasksByThread.get(threadId) === compactTask) {
+        codexAutoCompactTasksByThread.delete(threadId);
+      }
     });
+
+  codexAutoCompactTasksByThread.set(threadId, compactTask);
+  void compactTask;
 }
 
 function emitCodexAutoCompactNotification(input: {
@@ -1131,7 +1138,6 @@ async function runDetachedCodexCompaction(input: {
 
   const request = (method: string, params: unknown): Promise<unknown> => {
     const id = nextRequestId++;
-    socket.send(JSON.stringify({ method, id, params }));
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1139,6 +1145,14 @@ async function runDetachedCodexCompaction(input: {
         reject(new Error(`Timed out waiting for Codex app-server response: ${method}`));
       }, 60_000);
       pendingRequests.set(id, { resolve, reject, timer });
+
+      try {
+        socket.send(JSON.stringify({ method, id, params }));
+      } catch (error) {
+        pendingRequests.delete(id);
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   };
 
@@ -1188,7 +1202,18 @@ async function runDetachedCodexCompaction(input: {
         return;
       }
 
-      if (message.method === "thread/compacted" || message.method === "turn/completed") {
+      const params = objectParam((message as { params?: unknown }).params);
+      const notifiedThreadId = notificationThreadId(message.method ?? "", params);
+      const completedCompactionItem =
+        message.method === "item/completed" &&
+        objectParam(params.item).type === "contextCompaction";
+
+      if (
+        notifiedThreadId === input.threadId &&
+        (message.method === "thread/compacted" ||
+          message.method === "turn/completed" ||
+          completedCompactionItem)
+      ) {
         finish();
       }
     });
@@ -1271,8 +1296,8 @@ function sandboxMode(): CodexSandboxMode {
     : "danger-full-access";
 }
 
-function turnSandboxPolicy(cwd: string) {
-  const mode = sandboxMode();
+export function resolveCodexTurnSandboxPolicy(cwd: string, builderMode = false) {
+  const mode = builderMode ? "read-only" : sandboxMode();
 
   if (mode === "danger-full-access") {
     return { type: "dangerFullAccess" };
@@ -1281,7 +1306,7 @@ function turnSandboxPolicy(cwd: string) {
   if (mode === "read-only") {
     return {
       type: "readOnly",
-      networkAccess: true,
+      networkAccess: !builderMode,
     };
   }
 
@@ -1588,6 +1613,24 @@ export async function runCodexAppServerPrompt(
     };
   }
 
+  const pendingCompaction = input.sessionId
+    ? codexAutoCompactTasksByThread.get(input.sessionId)
+    : undefined;
+
+  if (pendingCompaction) {
+    try {
+      await Promise.resolve(input.onProgress?.({
+        type: "operation-progress",
+        label: "컨텍스트 자동 압축 마무리 대기",
+        detail: "같은 세션의 압축이 끝난 뒤 이 요청을 안전하게 시작합니다",
+        eventType: "thread/compact/wait",
+      }));
+    } catch (error) {
+      console.error("failed to deliver Codex compaction wait progress", error);
+    }
+    await pendingCompaction;
+  }
+
   const workspaceRoot = await ensureAsciiWorkspaceRoot(input.workspaceRoot);
   const originalWorkspaceRoot = path.resolve(input.workspaceRoot);
   const requestedCwd = path.resolve(input.cwd);
@@ -1748,7 +1791,6 @@ async function runPromptAgainstAppServer(input: {
 
   function request(method: string, params: unknown): Promise<unknown> {
     const id = nextRequestId++;
-    socket.send(JSON.stringify({ method, id, params }));
 
     return new Promise((resolve, reject) => {
       const requestTimeoutMs = input.input.timeoutMs > 0 ? Math.min(input.input.timeoutMs, 60_000) : 60_000;
@@ -1758,6 +1800,14 @@ async function runPromptAgainstAppServer(input: {
       }, requestTimeoutMs);
 
       pendingRequests.set(id, { resolve, reject, timer });
+
+      try {
+        socket.send(JSON.stringify({ method, id, params }));
+      } catch (error) {
+        pendingRequests.delete(id);
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -2083,8 +2133,8 @@ async function runPromptAgainstAppServer(input: {
           });
           notification("initialized");
 
-          const currentApprovalPolicy = approvalPolicy();
-          const currentSandboxMode = sandboxMode();
+          const currentApprovalPolicy = input.input.harnessBuilder ? "never" : approvalPolicy();
+          const currentSandboxMode = input.input.harnessBuilder ? "read-only" : sandboxMode();
           const threadResult =
             input.input.sessionId && input.input.forkSession
               ? await request("thread/fork", {
@@ -2131,14 +2181,27 @@ async function runPromptAgainstAppServer(input: {
             throw new Error("Codex app-server thread/fork did not return a forked thread ID.");
           }
 
+          const harness = input.input.harness;
+          const userText = harness
+            ? `$${harness.skillName}\n\n${input.input.prompt}`
+            : input.input.prompt;
           const turnResult = await request("turn/start", {
             threadId: sessionId,
-            input: [{ type: "text", text: input.input.prompt, text_elements: [] }],
+            input: [
+              { type: "text", text: userText, text_elements: [] },
+              ...(harness
+                ? [{
+                    type: "skill",
+                    name: harness.skillName,
+                    path: path.join(harness.snapshotPath, "skill", "SKILL.md"),
+                  }]
+                : []),
+            ],
             cwd: input.cwd,
             runtimeWorkspaceRoots: [input.cwd],
             approvalPolicy: currentApprovalPolicy,
             approvalsReviewer: APP_SERVER_APPROVALS_REVIEWER,
-            sandboxPolicy: turnSandboxPolicy(input.cwd),
+            sandboxPolicy: resolveCodexTurnSandboxPolicy(input.cwd, input.input.harnessBuilder === true),
             model: model(input.input),
             effort: reasoningEffort(input.input),
           });

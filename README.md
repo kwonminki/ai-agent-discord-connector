@@ -10,6 +10,15 @@
 
 Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI agent를 Discord 스레드로 사용하고, 서로 대화시킬 수 있는 개인용 브리지**입니다.
 
+## v2.0 Release
+
+> ### NEW · 대화로 만드는 Harness
+> **파일 포맷을 몰라도 agent와 문답만 하면 반복 가능한 workflow를 만들고, 별도 실행 스레드에서 Codex와 Claude Code로 재사용할 수 있습니다.**
+>
+> `/harness create`에서 목표만 입력하면 현재 작업 세션을 이어가거나 빈 세션에서 전용 Builder를 열 수 있습니다. Builder는 discovery → 상세 설계 → 전체 설계 검토 → 사용자 확인 순서로 대화하며 목표, 실제 사용 예시, 입력, 단계와 분기, 산출물, 성공 기준, 권한·금지사항, 실패 처리, 참고자료와 필요한 역할을 구조화합니다. 검토한 설계를 사용자가 명시적으로 승인한 뒤 `/harness publish-run`으로 검증된 불변 버전을 발행하고, Builder와 분리된 실행 세션을 만듭니다.
+>
+> 발행본은 digest와 exact version으로 고정됩니다. Worker는 매 실행 전에 경로, 파일 목록, symlink, manifest와 digest를 다시 검증합니다. Codex에는 공식 app-server skill item으로, Claude Code에는 격리된 로컬 plugin으로 주입하며, 임의 hook·MCP·background agent·실행 스크립트는 Builder 출력에서 허용하지 않습니다. 기존 `/fork`도 Builder 상태 또는 실행 중인 exact snapshot을 별도 세션으로 안전하게 이어받습니다.
+
 ## v1.5 Release
 
 > ### NEW · Agent-aware 컨텍스트 제어
@@ -60,7 +69,7 @@ https://github.com/kwonminki/ai-agent-discord-connector
 
 ### 현재 배포 방식
 
-v1은 신뢰하는 개인 환경에 직접 설치하는 self-hosted 방식입니다. Discord Gateway와 선택적인 Coordinator를 실행하는 쪽에는 각 bot token이 필요합니다. 사용자가 private Discord 서버를 만들고 bot application을 서버에 초대하면, 설치 에이전트가 역할, 채널, 권한, slash command, 로컬 worker와 서비스를 나머지 순서대로 구성할 수 있습니다.
+현재 배포 방식은 신뢰하는 개인 환경에 직접 설치하는 self-hosted 방식입니다. Discord Gateway와 선택적인 Coordinator를 실행하는 쪽에는 각 bot token이 필요합니다. 사용자가 private Discord 서버를 만들고 bot application을 서버에 초대하면, 설치 에이전트가 역할, 채널, 권한, slash command, 로컬 worker와 서비스를 나머지 순서대로 구성할 수 있습니다.
 
 프로젝트 운영자가 두 bot을 중앙에서 호스팅하고 다른 사용자가 초대만 해서 쓰는 방식에서는 최종 사용자가 bot token을 알 필요가 없습니다. 다만 그 방식에 필요한 multi-guild tenant 격리와 일회용 Local Agent pairing은 현재 v1의 완성된 배포 경로가 아닙니다. 현재 Control API와 Agent WebSocket을 인증 없이 공용 인터넷에 노출하지 마세요.
 
@@ -109,6 +118,24 @@ Codex 또는 Claude Code가 작업 중일 때 같은 스레드에 보낸 일반 
 
 기존 대화 맥락을 복제해 다른 방향으로 작업하려면 세션 스레드에서 `/fork`를 사용합니다. 원본과 fork 스레드는 서로 다른 agent 세션으로 이어집니다.
 
+### Harness 만들기와 실행
+
+Codex 또는 Claude Code 스레드에서 다음처럼 시작합니다.
+
+```text
+/harness create goal:이 프로젝트의 PR을 매번 같은 기준으로 리뷰하는 하네스를 만들고 싶어 source:현재 세션 이어서 (추천)
+```
+
+`source:current`는 지금까지의 대화 문맥을 복제하고, `source:fresh`는 빈 세션에서 시작합니다. 생성된 **Harness Builder** 스레드에서는 내부 파일 구조를 설명할 필요 없이 질문에 자연어로 답하면 됩니다. Builder는 읽기 전용으로 동작하면서 실제 사용 예시, 필요한 입력과 문맥, 세부 workflow와 분기, 산출물·성공 기준, 권한과 금지사항, 참고자료·역할, 실패 처리, 검증 사례를 차례로 구체화합니다.
+
+Builder 스레드는 생성 즉시 링크가 표시되고, agent session 연결과 첫 질문 준비 상태가 같은 메시지에 갱신됩니다. 봇은 4단계 진행 방식과 답하는 법을 안내하고, 매 문답 뒤에는 현재 단계·응답 횟수·채워진 영역 수·다음 행동을 짧게 표시합니다. `추천해서 계속`, `이 설계대로 만들기`, `발행하고 실행`, `발행만`, `상태 보기` 버튼이 나타나므로 꼭 필요한 답만 직접 입력하면 됩니다. Builder가 숨김 JSON 형식을 잘못 출력하면 봇이 같은 agent 세션에 최대 3회 자동 수정을 요청하며, 예약된 내부 JSON 블록은 연결 상태가 바뀌어도 Discord 답변에 노출하지 않습니다. Builder는 최소 3회의 응답으로 설계를 탐색한 뒤 완성된 9개 영역을 체크리스트로 보여주고 확인을 요청합니다. 사용자가 다음 답변에서 그 설계를 승인해야만 후보를 생성합니다. 봇은 이 단계와 확인된 설계 digest를 별도로 저장하므로 첫 턴 후보, 누락된 설계, 확인 후 몰래 바뀐 설계는 거부합니다. `/harness status`로도 같은 상태를 확인할 수 있습니다.
+
+```text
+/harness publish-run first_request:현재 변경사항을 리뷰해줘
+```
+
+이 명령은 exact version과 digest로 불변 발행한 뒤 별도 실행 스레드를 만듭니다. 이후 그 스레드의 모든 요청에는 같은 발행본이 다시 주입됩니다. `/harness list`, `/harness status`, `/harness run`으로 발행본을 확인하거나 목록에서 골라 재사용할 수 있습니다. `/harness-help`는 agent 세션이 연결되지 않은 채널에서도 전체 사용법을 바로 보여줍니다. Builder 스레드와 실행 스레드에서 `/fork`하면 각각 설계 상태와 exact 실행 버전을 유지한 별도 agent 세션이 만들어집니다.
+
 ### 자주 쓰는 명령
 
 | 명령 | 용도 |
@@ -123,6 +150,8 @@ Codex 또는 Claude Code가 작업 중일 때 같은 스레드에 보낸 일반 
 | `/queue-clear` | 아직 시작하지 않은 요청 삭제 |
 | `/interrupt` | 현재 Codex 또는 Claude Code turn 중단 |
 | `/fork` | 현재 세션 맥락을 복제해 새 스레드 만들기 |
+| `/harness` | 선택형 메뉴로 Builder 생성, 검증·발행, exact version 실행과 상태 확인 |
+| `/harness-help` | agent 세션 연결 없이 Harness 사용법 표시 |
 | `/chat-resume` | 지운 스레드의 Claude Code 세션을 골라 스레드로 다시 열기 |
 | `/howtouse` | 현재 agent에게 Discord 파일·설문 전송법 알려주기. `prompt:`로 요청을 함께 전달 |
 | `/where` | 현재 컴퓨터, 작업 폴더와 session ID 확인 |
@@ -158,7 +187,7 @@ Discord 메시지에 이미지, 영상, 오디오, 문서 또는 압축 파일�
 
 - 중요한 중간 설명은 태그 없이 조용히 쌓입니다.
 - 질문, 권한 요청, 중간 답변, 최종 완료와 실패는 Operator 역할 멘션으로 알림이 옵니다.
-- 긴 최종 답변은 여러 메시지 또는 원문 텍스트 파일로 전달됩니다.
+- 긴 최종 답변과 IDE·백그라운드 완료 알림은 잘리지 않도록 순서가 보장된 여러 메시지로 전달됩니다.
 - Discord의 사용자별 채널 알림 override는 bot이 변경할 수 없습니다. 예전에 직접 다른 값으로 바꾼 채널만 사용자가 **멘션만**으로 되돌리면 됩니다.
 
 ## 여러 컴퓨터 사용

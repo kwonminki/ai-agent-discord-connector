@@ -3,6 +3,15 @@ import { z } from "zod";
 const identifierSchema = z.string().trim().regex(/^[a-zA-Z0-9._:-]{1,160}$/);
 const nullableStringSchema = z.string().nullable().optional();
 const timeoutSchema = z.number().int().nonnegative();
+const harnessWorkerBindingSchema = z.object({
+  schemaVersion: z.literal(1),
+  harnessId: identifierSchema,
+  harnessVersionId: z.string().trim().regex(/^[a-z0-9][a-z0-9@.#-]{2,159}$/),
+  snapshotDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  runId: identifierSchema,
+  snapshotPath: z.string().min(1),
+  skillName: identifierSchema,
+}).strict();
 
 export const runWorkspaceCommandInputSchema = z.object({
   workspaceRoot: z.string(),
@@ -26,6 +35,8 @@ export const runCodexPromptInputSchema = z.object({
   model: nullableStringSchema,
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).nullable().optional(),
   controlKey: z.string().optional(),
+  harnessBuilder: z.boolean().optional(),
+  harness: harnessWorkerBindingSchema.optional(),
 }).passthrough();
 
 export const runClaudePromptInputSchema = z.object({
@@ -43,6 +54,8 @@ export const runClaudePromptInputSchema = z.object({
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullable().optional(),
   settings: nullableStringSchema,
   persistentSession: z.boolean().nullable().optional(),
+  harnessBuilder: z.boolean().optional(),
+  harness: harnessWorkerBindingSchema.optional(),
 }).passthrough();
 
 const directWorkerRequestBase = {

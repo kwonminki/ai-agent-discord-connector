@@ -2,11 +2,12 @@ import path from "node:path";
 import type { SessionOrigin } from "../../../packages/core/src/index.js";
 import type { DiscoveredCodexSession } from "../../../packages/codex-adapter/src/index.js";
 import type { ControlApiClient } from "./controlApiClient.js";
-import type {
-  DirectSyncState,
-  DirectSyncStateStore,
-  SyncedSessionChannelState,
-  SyncedWorkspaceState,
+import {
+  hasPendingCodexForkReservation,
+  type DirectSyncState,
+  type DirectSyncStateStore,
+  type SyncedSessionChannelState,
+  type SyncedWorkspaceState,
 } from "./directState.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { latestTranscriptMessageKey } from "./codexTranscriptSync.js";
@@ -321,14 +322,25 @@ export async function syncCodexSessionsToDiscord(
   const initialWorkspaceRoots = new Set(state.workspaces.map((workspace) => workspace.workspaceRoot));
   const bridgeArchivedSessionIds = new Set(state.archivedCodexSessionIds);
   const activeSessions = input.sessions.filter((session) => !bridgeArchivedSessionIds.has(session.id));
-  const selectedSessions = activeSessions.slice(0, input.limit);
+  // A fork transcript is discoverable before the Worker can return its new
+  // session id. Do not let background sync claim it ahead of the pending
+  // Discord fork thread.
+  const reservedForkSessions = activeSessions.filter((session) =>
+    hasPendingCodexForkReservation(state, session)
+  );
+  const selectedSessions = activeSessions
+    .filter((session) => !hasPendingCodexForkReservation(state, session))
+    .slice(0, input.limit);
   const filteredSessions = input.sessions.length - activeSessions.length;
   const result: SyncCodexSessionsResult = {
     createdCategories: 0,
     existingCategories: 0,
     createdChannels: 0,
     existingChannels: 0,
-    skippedSessions: filteredSessions + Math.max(0, activeSessions.length - selectedSessions.length),
+    skippedSessions:
+      filteredSessions +
+      reservedForkSessions.length +
+      Math.max(0, activeSessions.length - reservedForkSessions.length - selectedSessions.length),
   };
   const emitProgress = async (progress: Pick<SyncCodexSessionsProgress, "phase" | "processedSessions" | "currentSessionName">) => {
     await input.onProgress?.({

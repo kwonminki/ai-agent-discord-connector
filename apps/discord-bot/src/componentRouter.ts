@@ -40,6 +40,11 @@ export const COMPONENT_IDS = {
   reloadCommands: "cdc:reload:commands",
   reloadRestartConfirm: "cdc:reload:restart:confirm",
   reloadRestartForceConfirm: "cdc:reload:restart:force:confirm",
+  harnessRecommend: "cdc:harness:recommend",
+  harnessApprove: "cdc:harness:approve",
+  harnessPublish: "cdc:harness:publish",
+  harnessPublishRun: "cdc:harness:publish-run",
+  harnessStatus: "cdc:harness:status",
 } as const;
 
 export type AgentSurveyOtherTarget =
@@ -102,6 +107,10 @@ function encodedNewChatCommand(input: {
   initialPrompt: string | null;
 }): string {
   return `__cdc_new_chat ${encodeURIComponent(JSON.stringify(input))}`;
+}
+
+function encodedHarnessCommand(action: "publish" | "publish-run" | "status"): string {
+  return `__cdc_harness ${encodeURIComponent(JSON.stringify({ action }))}`;
 }
 
 function quoteShellToken(value: string): string | null {
@@ -235,6 +244,16 @@ export function routeDiscordComponent(customId: string, values: string[] = []): 
       return "archive confirm";
     case COMPONENT_IDS.maintenancePanel:
       return "maintenance";
+    case COMPONENT_IDS.harnessRecommend:
+      return "모르는 부분은 안전한 기본값을 추천해서 계속 설계해줘.";
+    case COMPONENT_IDS.harnessApprove:
+      return "방금 보여준 설계 그대로 하네스를 만들어줘.";
+    case COMPONENT_IDS.harnessPublish:
+      return encodedHarnessCommand("publish");
+    case COMPONENT_IDS.harnessPublishRun:
+      return encodedHarnessCommand("publish-run");
+    case COMPONENT_IDS.harnessStatus:
+      return encodedHarnessCommand("status");
     case COMPONENT_IDS.fileSystemUp:
       return componentShellCommand("cd ..");
     case COMPONENT_IDS.fileSystemRefresh:

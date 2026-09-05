@@ -16,10 +16,12 @@ export interface CodexSessionIndexEntry {
 export interface CodexSessionMeta {
   id: string;
   cwd: string;
+  forkedFromId?: string;
 }
 
 export interface DiscoveredCodexSession extends CodexSessionIndexEntry {
   cwdHint: string | null;
+  forkedFromId?: string;
   goalStatus?: CodexSessionGoalStatus;
   contextPreview?: CodexSessionContextMessage[];
   realtimeEvents?: CodexSessionRealtimeEvent[];
@@ -67,6 +69,7 @@ interface CodexThreadState {
 
 type SessionDetails = {
   cwdHint: string | null;
+  forkedFromId?: string;
   contextPreview?: CodexSessionContextMessage[];
   realtimeEvents?: CodexSessionRealtimeEvent[];
 };
@@ -136,13 +139,13 @@ export function parseSessionIndexLine(line: string): CodexSessionIndexEntry {
 export function parseSessionMetaLine(line: string): CodexSessionMeta | null {
   let parsed: {
     type?: string;
-    payload?: { id?: string; cwd?: string };
+    payload?: { id?: string; cwd?: string; forked_from_id?: string };
   };
 
   try {
     parsed = JSON.parse(line) as {
       type?: string;
-      payload?: { id?: string; cwd?: string };
+      payload?: { id?: string; cwd?: string; forked_from_id?: string };
     };
   } catch {
     return null;
@@ -155,6 +158,9 @@ export function parseSessionMetaLine(line: string): CodexSessionMeta | null {
   return {
     id: parsed.payload.id,
     cwd: parsed.payload.cwd,
+    ...(typeof parsed.payload.forked_from_id === "string" && parsed.payload.forked_from_id.length > 0
+      ? { forkedFromId: parsed.payload.forked_from_id }
+      : {}),
   };
 }
 
@@ -252,6 +258,7 @@ export async function discoverCodexSessions(
       return {
         ...entry,
         cwdHint: details.cwdHint,
+        ...(details.forkedFromId ? { forkedFromId: details.forkedFromId } : {}),
         ...(goalStatuses.get(entry.id) ? { goalStatus: goalStatuses.get(entry.id) } : {}),
         ...(details.contextPreview ? { contextPreview: details.contextPreview } : {}),
         ...(details.realtimeEvents ? { realtimeEvents: details.realtimeEvents } : {}),
@@ -427,10 +434,14 @@ async function readSessionDetailsFromFile(
 
   const tailText = tailStart > 0 ? dropLeadingPartialLine(rawTailText) : rawTailText;
   const tailDetails = parseSessionDetailsText(sessionId, tailText, options);
+  const headIdentity = parseSessionIdentityHints(sessionId, headText);
 
   return {
     ...tailDetails,
-    cwdHint: tailDetails.cwdHint ?? parseSessionCwdHint(sessionId, headText),
+    cwdHint: tailDetails.cwdHint ?? headIdentity.cwdHint,
+    ...(tailDetails.forkedFromId || headIdentity.forkedFromId
+      ? { forkedFromId: tailDetails.forkedFromId ?? headIdentity.forkedFromId! }
+      : {}),
   };
 }
 
@@ -439,8 +450,11 @@ function parseSessionDetailsText(
   text: string,
   options: DiscoverCodexSessionsOptions,
 ): SessionDetails {
+  const identity = parseSessionIdentityHints(sessionId, text);
+
   return {
-    cwdHint: parseSessionCwdHint(sessionId, text),
+    cwdHint: identity.cwdHint,
+    ...(identity.forkedFromId ? { forkedFromId: identity.forkedFromId } : {}),
     ...(options.includeContextPreview
       ? {
           contextPreview: parseSessionContextPreview(text, {
@@ -460,15 +474,21 @@ function parseSessionDetailsText(
   };
 }
 
-function parseSessionCwdHint(sessionId: string, text: string): string | null {
+function parseSessionIdentityHints(
+  sessionId: string,
+  text: string,
+): Pick<SessionDetails, "cwdHint" | "forkedFromId"> {
   for (const line of text.split("\n").filter(Boolean)) {
     const meta = parseSessionMetaLine(line);
     if (meta?.id === sessionId) {
-      return meta.cwd;
+      return {
+        cwdHint: meta.cwd,
+        ...(meta.forkedFromId ? { forkedFromId: meta.forkedFromId } : {}),
+      };
     }
   }
 
-  return null;
+  return { cwdHint: null };
 }
 
 function dropLeadingPartialLine(text: string): string {
@@ -484,6 +504,9 @@ function mergeSessionDetails(
 ): SessionDetails {
   return {
     cwdHint: appended.cwdHint ?? previous.cwdHint,
+    ...(appended.forkedFromId || previous.forkedFromId
+      ? { forkedFromId: appended.forkedFromId ?? previous.forkedFromId! }
+      : {}),
     ...(options.includeContextPreview
       ? {
           contextPreview: [
@@ -947,6 +970,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
           content?: unknown;
           name?: string;
           arguments?: unknown;
+          last_agent_message?: unknown;
         };
       }
     | undefined;
@@ -962,6 +986,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
         content?: unknown;
         name?: string;
         arguments?: unknown;
+        last_agent_message?: unknown;
       };
     };
   } catch {
@@ -1037,6 +1062,14 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
   }
 
   if (parsed.type === "event_msg" && parsed.payload.type === "task_complete") {
+    if (
+      Object.hasOwn(parsed.payload, "last_agent_message") &&
+      (typeof parsed.payload.last_agent_message !== "string" ||
+        parsed.payload.last_agent_message.trim().length === 0)
+    ) {
+      return null;
+    }
+
     return {
       key: hashSessionEventLine(line),
       kind: "status",

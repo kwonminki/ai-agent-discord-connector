@@ -249,6 +249,12 @@ export function createDirectControlClient(
         onApprovalRequest: input.onApprovalRequest,
         onUserInputRequest: input.onUserInputRequest,
       };
+      if (input.payload.harness && !options.workerClient) {
+        return {
+          jobId: randomUUID(),
+          error: { message: "Harness execution requires the isolated direct worker." },
+        };
+      }
       if (input.payload.forkSession && codexRunner !== "app-server") {
         return {
           jobId: randomUUID(),
@@ -331,6 +337,13 @@ export function createDirectControlClient(
     async submitClaudePrompt(input) {
       if (input.computerId !== config.direct.computerId) {
         return { jobId: randomUUID(), error: { message: "Computer is offline" } };
+      }
+
+      if (input.payload.harness && !options.workerClient) {
+        return {
+          jobId: randomUUID(),
+          error: { message: "Harness execution requires the isolated direct worker." },
+        };
       }
 
       if (options.workerClient) {

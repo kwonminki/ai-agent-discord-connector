@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   extractAgentRelayDecision,
   splitDiscordMessageContent,
+  stripHarnessBuilderBlocks,
 } from "../../../packages/core/src/index.js";
 export { splitDiscordMessageContent } from "../../../packages/core/src/index.js";
 import {
@@ -3784,7 +3785,13 @@ export function formatAgentResultUpdate(
     ? result.finalMessage
     : null;
   const resultStderr = typeof result?.stderr === "string" && result.stderr.trim().length > 0 ? result.stderr : null;
-  const finalMessage = response.error?.message ?? resultFinalMessage ?? resultStderr ?? `${agentLabel(input)} did not return a final message.`;
+  const rawFinalMessage = response.error?.message ?? resultFinalMessage ?? resultStderr ?? `${agentLabel(input)} did not return a final message.`;
+  const finalMessageWithoutHarnessBlocks = stripHarnessBuilderBlocks(rawFinalMessage);
+  const finalMessage = finalMessageWithoutHarnessBlocks || (
+    finalMessageWithoutHarnessBlocks !== rawFinalMessage
+      ? "Harness Builder가 설계 상태를 갱신했습니다."
+      : rawFinalMessage
+  );
   const sessionId = typeof result?.sessionId === "string" && result.sessionId.length > 0 ? result.sessionId : null;
   const errorCode = typeof result?.errorCode === "string" && result.errorCode.length > 0 ? result.errorCode : null;
   const fields: DiscordEmbedFieldPayload[] = [

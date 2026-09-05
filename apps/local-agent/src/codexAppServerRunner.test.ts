@@ -9,6 +9,7 @@ import { WebSocketServer } from "ws";
 import {
   defaultAppServerTransportKind,
   interruptActiveCodexAppServerTurn,
+  resolveCodexTurnSandboxPolicy,
   runCodexAppServerPrompt,
   steerActiveCodexAppServerTurn,
   terminateManagedAppServer,
@@ -33,6 +34,13 @@ describe("runCodexAppServerPrompt", () => {
     expect(defaultAppServerTransportKind("win32")).toBe("tcp");
     expect(defaultAppServerTransportKind("darwin")).toBe("unix");
     expect(defaultAppServerTransportKind("linux")).toBe("unix");
+  });
+
+  it("keeps Harness Builder turns read-only and offline", () => {
+    expect(resolveCodexTurnSandboxPolicy("/repo", true)).toEqual({
+      type: "readOnly",
+      networkAccess: false,
+    });
   });
 
   it("force-stops a managed app-server child that ignores graceful termination", async () => {
@@ -923,6 +931,15 @@ describe("runCodexAppServerPrompt", () => {
         forkSession: true,
         sessionName: "Refactor branch",
         appServerUrl,
+        harness: {
+          schemaVersion: 1,
+          harnessId: "reviewer",
+          harnessVersionId: "reviewer@1.0.0#deadbeef0000",
+          snapshotDigest: "deadbeef",
+          snapshotPath: path.join(workspaceRoot, "published", "reviewer", "1.0.0-deadbeef"),
+          runId: "run-1",
+          skillName: "code-reviewer",
+        },
         onProgress: (event) => {
           events.push(event);
         },
@@ -961,6 +978,21 @@ describe("runCodexAppServerPrompt", () => {
             method: "turn/start",
             params: expect.objectContaining({
               threadId: "fork-thread-1",
+              input: [
+                { type: "text", text: "$code-reviewer\n\nfork 준비", text_elements: [] },
+                {
+                  type: "skill",
+                  name: "code-reviewer",
+                  path: path.join(
+                    workspaceRoot,
+                    "published",
+                    "reviewer",
+                    "1.0.0-deadbeef",
+                    "skill",
+                    "SKILL.md",
+                  ),
+                },
+              ],
             }),
           }),
         ]),

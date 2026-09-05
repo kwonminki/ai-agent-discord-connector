@@ -11,12 +11,13 @@ import {
   workspaceId,
   type DiscordGuildSurface,
 } from "./codexSessionSync.js";
-import type {
-  CodexTaskCompletionNotificationState,
-  DirectSyncState,
-  DirectSyncStateStore,
-  DiscordRequestedCodexSessionState,
-  SyncedSessionChannelState,
+import {
+  hasPendingCodexForkReservation,
+  type CodexTaskCompletionNotificationState,
+  type DirectSyncState,
+  type DirectSyncStateStore,
+  type DiscordRequestedCodexSessionState,
+  type SyncedSessionChannelState,
 } from "./directState.js";
 import {
   appendAgentResultContinuationMessages,
@@ -203,6 +204,17 @@ function formatTaskCompleteNotification(
 
   if (preparedAnswer) {
     registerAnswerCopyText(payload, preparedAnswer.answer);
+    appendAgentResultContinuationMessages(
+      payload,
+      preparedAnswer.continuationDescriptions.map((description) => ({
+        allowedMentions: { parse: [] },
+        embeds: [{
+          title: intermediate ? "중간 답변 (계속)" : "답변 (계속)",
+          color: ANSWER_EMBED_COLOR,
+          description,
+        }],
+      })),
+    );
   }
 
   const files = preparedAnswer?.files ?? [];
@@ -408,20 +420,39 @@ export async function notifyCodexTaskCompletions(
     }
 
     seenCompletionEvents.add(completionEventKey);
-
     const previous = notificationsBySession.get(sessionKey);
+
+    if (hasPendingCodexForkReservation(state, session)) {
+      // A freshly forked rollout contains copied historical task_complete
+      // events. Baseline them without creating a competing Discord thread or
+      // posting an old answer while the explicit fork is still provisioning.
+      if (previous?.lastTaskCompleteEventKey !== completionEvent.key) {
+        notificationsBySession.set(
+          sessionKey,
+          nextNotificationState({ session, eventKey: completionEvent.key }),
+        );
+        updatedNotificationSessionIds.add(sessionKey);
+        changed = true;
+      }
+      continue;
+    }
+
     const pendingDiscordRequest = discordRequestedSessions.get(sessionKey);
     const requestRelation = discordRequestCompletionRelation({
       request: pendingDiscordRequest,
       completionEvent,
       session,
     });
-    const discordRequest = requestRelation === "current" ? pendingDiscordRequest : undefined;
-    const requestedChannel = discordRequest?.discordChannelId
+    const currentDiscordRequest = requestRelation === "current" ? pendingDiscordRequest : undefined;
+    const requestedChannel = currentDiscordRequest?.discordChannelId
       ? state.sessionChannels.find(
-          (channel) => channel.discordChannelId === discordRequest.discordChannelId,
+          (channel) => channel.discordChannelId === currentDiscordRequest.discordChannelId,
         ) ?? null
       : null;
+    const discordRequest =
+      currentDiscordRequest?.discordChannelId && !requestedChannel
+        ? undefined
+        : currentDiscordRequest;
     const ensuredThread = initialized
       ? discordRequest?.discordChannelId
         ? { channel: requestedChannel, created: false }

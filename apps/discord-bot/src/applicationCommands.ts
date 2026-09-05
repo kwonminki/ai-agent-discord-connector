@@ -4,6 +4,7 @@ import {
 } from "../../../packages/core/src/index.js";
 
 const OPTION_TYPES = {
+  subcommand: 1,
   string: 3,
   integer: 4,
   boolean: 5,
@@ -24,6 +25,7 @@ export interface DiscordApplicationCommandOptionDefinition {
   min_value?: number;
   max_value?: number;
   choices?: DiscordApplicationCommandChoiceDefinition[];
+  options?: DiscordApplicationCommandOptionDefinition[];
 }
 
 export interface DiscordApplicationCommandChoiceDefinition {
@@ -37,6 +39,7 @@ export interface DiscordApplicationCommandInteractionLike {
     getString(name: string, required?: boolean): string | null;
     getInteger?(name: string, required?: boolean): number | null;
     getBoolean?(name: string, required?: boolean): boolean | null;
+    getSubcommand?(required?: boolean): string | null;
   };
 }
 
@@ -70,6 +73,19 @@ function stringOption(input: {
     required: input.required,
     autocomplete: input.autocomplete,
     choices: input.choices,
+  };
+}
+
+function subcommandOption(input: {
+  name: string;
+  description: string;
+  options?: DiscordApplicationCommandOptionDefinition[];
+}): DiscordApplicationCommandOptionDefinition {
+  return {
+    type: OPTION_TYPES.subcommand,
+    name: input.name,
+    description: input.description,
+    options: input.options,
   };
 }
 
@@ -155,6 +171,117 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
         required: true,
       }),
     ],
+  },
+  {
+    name: "harness",
+    description: "문답으로 reusable harness를 만들고 불변 버전을 실행합니다.",
+    options: [
+      subcommandOption({
+        name: "create",
+        description: "질문에 답하며 새 Harness를 설계합니다.",
+        options: [
+          stringOption({
+            name: "goal",
+            description: "반복해서 사용하고 싶은 작업의 목표",
+            required: true,
+          }),
+          stringOption({
+            name: "source",
+            description: "Builder가 시작할 문맥. 생략하면 현재 세션",
+            choices: [
+              { name: "현재 세션 이어서 (추천)", value: "current" },
+              { name: "새 문맥에서 시작", value: "fresh" },
+            ],
+          }),
+          stringOption({
+            name: "thread_name",
+            description: "Builder 스레드 이름. 생략하면 자동 생성",
+          }),
+        ],
+      }),
+      subcommandOption({
+        name: "publish-run",
+        description: "확정한 설계를 발행하고 별도 실행 스레드를 엽니다.",
+        options: [
+          stringOption({
+            name: "first_request",
+            description: "새 실행 스레드에서 바로 처리할 첫 요청",
+          }),
+          stringOption({
+            name: "source",
+            description: "실행 스레드가 시작할 문맥. 생략하면 Builder 설정",
+            choices: [
+              { name: "Builder의 원본 세션 이어서 (추천)", value: "current" },
+              { name: "새 문맥에서 시작", value: "fresh" },
+            ],
+          }),
+          stringOption({
+            name: "thread_name",
+            description: "실행 스레드 이름. 생략하면 자동 생성",
+          }),
+        ],
+      }),
+      subcommandOption({
+        name: "publish",
+        description: "확정한 설계를 불변 버전으로 발행만 합니다.",
+      }),
+      subcommandOption({
+        name: "run",
+        description: "발행된 Harness를 골라 별도 스레드에서 실행합니다.",
+        options: [
+          stringOption({
+            name: "harness",
+            description: "실행할 발행 Harness",
+            required: true,
+            autocomplete: true,
+          }),
+          stringOption({
+            name: "version",
+            description: "정확한 버전. 생략하면 가장 최근 발행본",
+          }),
+          stringOption({
+            name: "first_request",
+            description: "새 실행 스레드에서 바로 처리할 첫 요청",
+          }),
+          stringOption({
+            name: "source",
+            description: "실행 문맥. 생략하면 새 문맥에서 시작",
+            choices: [
+              { name: "새 문맥에서 시작 (추천)", value: "fresh" },
+              { name: "현재 세션 이어서", value: "current" },
+            ],
+          }),
+          stringOption({
+            name: "thread_name",
+            description: "실행 스레드 이름. 생략하면 자동 생성",
+          }),
+        ],
+      }),
+      subcommandOption({
+        name: "status",
+        description: "현재 Builder 또는 실행 상태를 확인합니다.",
+      }),
+      subcommandOption({
+        name: "list",
+        description: "발행된 Harness 버전을 확인합니다.",
+      }),
+      subcommandOption({
+        name: "leave",
+        description: "현재 스레드의 Harness 연결만 해제합니다.",
+      }),
+      subcommandOption({
+        name: "cancel",
+        description: "현재 Builder를 취소합니다.",
+      }),
+      subcommandOption({
+        name: "help",
+        description: "Harness 사용법을 바로 보여줍니다.",
+      }),
+    ],
+  },
+  {
+    name: "harness-help",
+    description: "세션 연결 없이 Harness 사용법을 보여줍니다.",
   },
   {
     name: "model",
@@ -533,17 +660,22 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
 export function discordApplicationCommands(
   locale: ConnectorLocale = "ko",
 ): DiscordApplicationCommandDefinition[] {
+  const localizeOptions = (
+    options: DiscordApplicationCommandOptionDefinition[] | undefined,
+  ): DiscordApplicationCommandOptionDefinition[] | undefined => options?.map((option) => ({
+    ...option,
+    description: localizeConnectorText(option.description, locale),
+    choices: option.choices?.map((choice) => ({
+      ...choice,
+      name: localizeConnectorText(choice.name, locale),
+    })),
+    options: localizeOptions(option.options),
+  }));
+
   return DISCORD_APPLICATION_COMMANDS.map((command) => ({
     ...command,
     description: localizeConnectorText(command.description, locale),
-    options: command.options?.map((option) => ({
-      ...option,
-      description: localizeConnectorText(option.description, locale),
-      choices: option.choices?.map((choice) => ({
-        ...choice,
-        name: localizeConnectorText(choice.name, locale),
-      })),
-    })),
+    options: localizeOptions(command.options),
   }));
 }
 
@@ -634,6 +766,37 @@ function encodedScheduleCommand(input: {
   return `__cdc_schedule ${encodeURIComponent(JSON.stringify(input))}`;
 }
 
+function encodedHarnessCommand(input: {
+  action: string;
+  source: string | null;
+  name: string | null;
+  harnessId: string | null;
+  version: string | null;
+  prompt: string | null;
+}): string {
+  return `__cdc_harness ${encodeURIComponent(JSON.stringify(input))}`;
+}
+
+export function selectedHarnessSubcommand(
+  interaction: DiscordApplicationCommandInteractionLike,
+): string | null {
+  try {
+    return interaction.options.getSubcommand?.(false)?.trim().toLowerCase() ||
+      interaction.options.getString("action")?.trim().toLowerCase() ||
+      null;
+  } catch {
+    return interaction.options.getString("action")?.trim().toLowerCase() || null;
+  }
+}
+
+export function isHarnessHelpInteraction(
+  interaction: DiscordApplicationCommandInteractionLike,
+): boolean {
+  const commandName = interaction.commandName.trim().toLowerCase();
+  return commandName === "harness-help" ||
+    (commandName === "harness" && selectedHarnessSubcommand(interaction) === "help");
+}
+
 export function routeDiscordApplicationCommand(
   interaction: DiscordApplicationCommandInteractionLike,
   locale: ConnectorLocale = "ko",
@@ -663,6 +826,24 @@ export function routeDiscordApplicationCommand(
       }
 
       return skillPrompt(skillName, prompt, locale);
+    }
+    case "harness": {
+      const action = selectedHarnessSubcommand(interaction);
+      if (!action || action === "help") {
+        return null;
+      }
+      return encodedHarnessCommand({
+        action,
+        source: interaction.options.getString("source")?.trim().toLowerCase() || null,
+        name: interaction.options.getString("thread_name")?.trim() ||
+          interaction.options.getString("name")?.trim() ||
+          null,
+        harnessId: interaction.options.getString("harness")?.trim().toLowerCase() || null,
+        version: interaction.options.getString("version")?.trim() || null,
+        prompt: interaction.options.getString(action === "create" ? "goal" : "first_request")?.trim() ||
+          interaction.options.getString("prompt")?.trim() ||
+          null,
+      });
     }
     case "model": {
       const model = interaction.options.getString("model", true)?.trim();

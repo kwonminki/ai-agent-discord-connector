@@ -3,10 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { agentRelayTurnResultSchema } from "../../../packages/core/src/index.js";
+import { createHarnessStore } from "./harnessStore.js";
 import {
   DEFAULT_AGENT_PROMPT_TIMEOUT_MS,
+  DEFAULT_HARNESS_VALIDATION_RETRY_ATTEMPTS,
   createDiscordMessageHandler,
   resolveAgentPromptTimeoutMs,
+  resolveHarnessValidationRetryAttempts,
   type ManagedDiscordChannelContext,
 } from "./messageHandler.js";
 
@@ -39,6 +42,15 @@ describe("createDiscordMessageHandler", () => {
     expect(resolveAgentPromptTimeoutMs(3_000, "7200000")).toBe(7_200_000);
     expect(resolveAgentPromptTimeoutMs(3_000, "0")).toBe(0);
     expect(resolveAgentPromptTimeoutMs(10_000, "1000")).toBe(10_000);
+  });
+
+  it("uses three bounded Harness validation retries by default", () => {
+    expect(resolveHarnessValidationRetryAttempts(undefined)).toBe(
+      DEFAULT_HARNESS_VALIDATION_RETRY_ATTEMPTS,
+    );
+    expect(resolveHarnessValidationRetryAttempts("0")).toBe(0);
+    expect(resolveHarnessValidationRetryAttempts("2")).toBe(2);
+    expect(resolveHarnessValidationRetryAttempts("99")).toBe(5);
   });
 
   it("accepts a trusted relay prompt only in an agent thread and returns a structured callback without a mention", async () => {
@@ -2705,6 +2717,398 @@ describe("createDiscordMessageHandler", () => {
         embeds: [expect.objectContaining({ title: "Claude Code fork ready" })],
       }),
     );
+  });
+
+  it("interviews across multiple turns before storing a hidden validated Harness candidate", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "discord-harness-builder-"));
+    const harnessStore = createHarnessStore(path.join(tempRoot, "harnesses"));
+    const createNewCodexChat = vi.fn().mockResolvedValue({
+      discordChannelId: "harness-builder-thread",
+      discordCategoryId: null,
+      channelName: "harness-builder",
+      threadName: "Harness Builder",
+      cwd: "/repo",
+      workspaceRoot: "/repo",
+      workspaceDisplayName: "repo",
+      pendingSession: true,
+      initialPrompt: null,
+      discordDeliveryMode: "thread",
+      channelMode: "session-linked",
+    });
+    const candidate = {
+      manifest: {
+        id: "safe-review",
+        name: "safe-review",
+        description: "Review repository changes with a repeatable safety checklist.",
+        version: "1.0.0",
+        providers: ["codex", "claude"],
+        maxSubagents: 0,
+        outputs: ["Review report"],
+      },
+      files: [{
+        path: "SKILL.md",
+        content: "---\nname: safe-review\ndescription: Review repository changes with a repeatable safety checklist.\n---\n\nInspect the requested changes and report findings.",
+      }],
+    };
+    const completeSections = {
+      purposeAndTriggers: "Review repository changes before merge when correctness and safety matter.",
+      usageExamples: "Review the current pull request and report only actionable findings.",
+      inputsAndContext: "Use repository instructions, the current diff, and the requested scope.",
+      workflowAndDecisions: "Inspect the diff, trace risky behavior, validate evidence, and rank findings.",
+      outputsAndSuccess: "Return a concise severity-ranked report with precise file references.",
+      constraintsAndPermissions: "Remain read-only, avoid network access, and do not change files.",
+      resourcesAndRoles: "Use local source and tests with one reviewer unless another role is useful.",
+      failuresAndEscalation: "Ask when scope is ambiguous and disclose unverifiable assumptions.",
+      validationCases: "Cover a normal bug, a clean diff, and an ambiguous edge case.",
+    };
+    const brief = (phase: "discovery" | "design" | "review" | "ready") => ({
+      schemaVersion: 1,
+      phase,
+      sections: phase === "discovery"
+        ? { ...completeSections, validationCases: null }
+        : completeSections,
+      openQuestions: phase === "discovery" ? ["실패 사례에서는 어떻게 행동할까요?"] : [],
+      userConfirmed: phase === "ready",
+    });
+    let builderTurn = 0;
+    const submitCodexPrompt = vi.fn(async (input) => {
+      await input.onProgress?.({ type: "thread-started", sessionId: "harness-builder-session" });
+      builderTurn += 1;
+      const phase = (["discovery", "design", "review", "ready"] as const)[builderTurn - 1] ?? "ready";
+      const candidateBlock = phase === "ready"
+        ? `\n\n\`\`\`codex-discord-harness\n${JSON.stringify(candidate)}\n\`\`\``
+        : "";
+      return {
+        jobId: "harness-builder-job",
+        result: {
+          status: "completed",
+          sessionId: "harness-builder-session",
+          finalMessage: `Builder ${phase} 응답입니다.\n\n\`\`\`codex-discord-harness-brief\n${JSON.stringify(brief(phase))}\n\`\`\`${candidateBlock}`,
+        },
+      };
+    });
+    const sendTextMessage = vi.fn().mockResolvedValue({ id: "harness-message" });
+    const builderReply = vi.fn().mockResolvedValue(undefined);
+    const linkNewCodexSession = vi.fn().mockResolvedValue(undefined);
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        discordDeliveryMode: "thread",
+        discordParentChannelId: "codex-parent",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      createNewCodexChat,
+      linkNewCodexSession,
+      harnessStore,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    try {
+      await handleMessage({
+        authorBot: false,
+        userId: "discord-user-1",
+        channelId: "codex-source-thread",
+        content: `__cdc_harness ${encodeURIComponent(JSON.stringify({
+          action: "create",
+          source: "fresh",
+          name: "Harness Builder",
+          prompt: "안전한 코드 리뷰 하네스를 만들어줘",
+        }))}`,
+        roleIds: ["role-operator"],
+        guild: {
+          createCategory: vi.fn(),
+          createTextChannel: vi.fn(),
+          sendTextMessage,
+        },
+        reply: builderReply,
+      });
+
+      const initialBuild = await harnessStore.buildForChannel("harness-builder-thread");
+      expect(initialBuild).toMatchObject({
+        status: "drafting",
+        interviewPhase: "discovery",
+        interviewTurnCount: 1,
+        candidateManifest: null,
+      });
+
+      for (const content of [
+        "실패 시에는 추측하지 말고 나에게 질문해줘.",
+        "네가 정리한 전체 설계를 먼저 보여줘.",
+        "응, 방금 보여준 설계 그대로 만들어줘.",
+      ]) {
+        await handleMessage({
+          authorBot: false,
+          userId: "discord-user-1",
+          channelId: "harness-builder-thread",
+          content,
+          roleIds: ["role-operator"],
+          guild: {
+            createCategory: vi.fn(),
+            createTextChannel: vi.fn(),
+            sendTextMessage,
+          },
+          reply: builderReply,
+        });
+      }
+
+      expect(submitCodexPrompt).toHaveBeenCalledWith(expect.objectContaining({
+        queueKey: "harness-builder-thread",
+        payload: expect.objectContaining({
+          harnessBuilder: true,
+          sessionId: null,
+          forkSession: false,
+          prompt: expect.stringContaining("사용자는 harness, skill, agent, YAML/JSON 구조를 몰라도 됩니다"),
+        }),
+      }));
+      expect(linkNewCodexSession).toHaveBeenCalledWith({
+        discordChannelId: "harness-builder-thread",
+        codexSessionId: "harness-builder-session",
+        threadName: "Harness Builder",
+      });
+      const build = await harnessStore.buildForChannel("harness-builder-thread");
+      expect(build).toMatchObject({
+        status: "validated",
+        builderAgentSessionId: "harness-builder-session",
+        interviewPhase: "ready",
+        interviewTurnCount: 4,
+        candidateManifest: { id: "safe-review", version: "1.0.0" },
+      });
+      expect(build?.candidateInterviewDigest).toBe(build?.reviewedInterviewDigest);
+      expect(JSON.stringify(sendTextMessage.mock.calls)).toContain("진행 방식");
+      expect(JSON.stringify(builderReply.mock.calls[0])).toContain("Harness Builder 스레드를 만들었습니다");
+      expect(JSON.stringify(builderReply.mock.calls[0])).toContain("harness-builder-thread");
+      expect(JSON.stringify(builderReply.mock.calls)).toContain("설계 진행");
+      expect(JSON.stringify(builderReply.mock.calls)).toContain("cdc:harness:publish-run");
+      expect(JSON.stringify(sendTextMessage.mock.calls)).not.toContain("codex-discord-harness");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("automatically asks the same Builder session to repair malformed JSON", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "discord-harness-repair-"));
+    const harnessStore = createHarnessStore(path.join(tempRoot, "harnesses"));
+    const validBrief = {
+      schemaVersion: 1,
+      phase: "discovery",
+      sections: {
+        purposeAndTriggers: "반복 가능한 코드 리뷰를 설계한다.",
+        usageExamples: "현재 변경사항을 리뷰해줘.",
+        inputsAndContext: null,
+        workflowAndDecisions: null,
+        outputsAndSuccess: null,
+        constraintsAndPermissions: null,
+        resourcesAndRoles: null,
+        failuresAndEscalation: null,
+        validationCases: null,
+      },
+      openQuestions: ["리뷰 결과 형식은 무엇인가요?"],
+      userConfirmed: false,
+    };
+    let turn = 0;
+    const submitCodexPrompt = vi.fn(async (input) => {
+      turn += 1;
+      if (turn <= 3) {
+        if (turn === 1) {
+          await input.onProgress?.({ type: "thread-started", sessionId: "harness-repair-session" });
+        }
+        return {
+          jobId: `harness-broken-job-${turn}`,
+          result: {
+            status: "completed",
+            sessionId: "harness-repair-session",
+            finalMessage: [
+              "먼저 원하는 결과 형식을 알려주세요.",
+              "",
+              "```codex-discord-harness-brief",
+              JSON.stringify(validBrief, null, 2).replace('"openQuestions"', "openQuestions"),
+              "```",
+            ].join("\n"),
+          },
+        };
+      }
+      return {
+        jobId: "harness-repair-job",
+        result: {
+          status: "completed",
+          sessionId: "harness-repair-session",
+          finalMessage: [
+            "먼저 원하는 결과 형식을 알려주세요.",
+            "",
+            "```codex-discord-harness-brief",
+            JSON.stringify(validBrief),
+            "```",
+          ].join("\n"),
+        },
+      };
+    });
+    const sendTextMessage = vi.fn().mockResolvedValue({ id: "harness-repair-message" });
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        discordDeliveryMode: "thread",
+        discordParentChannelId: "codex-parent",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      createNewCodexChat: vi.fn().mockResolvedValue({
+        discordChannelId: "harness-repair-thread",
+        discordCategoryId: null,
+        channelName: "harness-repair",
+        threadName: "Harness Builder",
+        cwd: "/repo",
+        workspaceRoot: "/repo",
+        workspaceDisplayName: "repo",
+        pendingSession: true,
+        initialPrompt: null,
+        discordDeliveryMode: "thread",
+        channelMode: "session-linked",
+      }),
+      linkNewCodexSession: vi.fn().mockResolvedValue(undefined),
+      harnessStore,
+      harnessValidationRetryAttempts: 3,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    try {
+      await handleMessage({
+        authorBot: false,
+        userId: "discord-user-1",
+        channelId: "codex-source-thread",
+        content: `__cdc_harness ${encodeURIComponent(JSON.stringify({
+          action: "create",
+          source: "fresh",
+          name: "Harness Builder",
+          prompt: "코드 리뷰 하네스를 만들어줘",
+        }))}`,
+        roleIds: ["role-operator"],
+        guild: {
+          createCategory: vi.fn(),
+          createTextChannel: vi.fn(),
+          sendTextMessage,
+        },
+        reply: vi.fn().mockResolvedValue(undefined),
+      });
+
+      expect(submitCodexPrompt).toHaveBeenCalledTimes(4);
+      expect(submitCodexPrompt).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        queueKey: "harness-repair-thread",
+        payload: expect.objectContaining({
+          sessionId: "harness-repair-session",
+          forkSession: false,
+          harnessBuilder: true,
+          prompt: expect.stringContaining("Connector 자동 형식 복구 요청"),
+        }),
+      }));
+      const build = await harnessStore.buildForChannel("harness-repair-thread");
+      expect(build).toMatchObject({
+        status: "drafting",
+        interviewPhase: "discovery",
+        interviewTurnCount: 1,
+        builderAgentSessionId: "harness-repair-session",
+        error: null,
+      });
+      expect(JSON.stringify(sendTextMessage.mock.calls)).toContain("자동으로 3회 수정해 복구했습니다");
+      expect(JSON.stringify(sendTextMessage.mock.calls)).not.toContain("설계 브리프 검증 실패");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("automatically repairs malformed Claude Code Builder output in the same session", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "discord-claude-harness-repair-"));
+    const harnessStore = createHarnessStore(path.join(tempRoot, "harnesses"));
+    const build = await harnessStore.createBuild({
+      provider: "claude",
+      sourceMode: "fresh",
+      builderDiscordChannelId: "claude-builder-thread",
+    });
+    await harnessStore.bindBuilderSession(build.buildId, "claude-builder-session");
+    const validBrief = {
+      schemaVersion: 1,
+      phase: "discovery",
+      sections: {
+        purposeAndTriggers: "반복 가능한 문서 리뷰를 설계한다.",
+        usageExamples: "현재 문서를 리뷰해줘.",
+        inputsAndContext: null,
+        workflowAndDecisions: null,
+        outputsAndSuccess: null,
+        constraintsAndPermissions: null,
+        resourcesAndRoles: null,
+        failuresAndEscalation: null,
+        validationCases: null,
+      },
+      openQuestions: ["어떤 문서가 대상인가요?"],
+      userConfirmed: false,
+    };
+    let turn = 0;
+    const submitClaudePrompt = vi.fn(async () => {
+      turn += 1;
+      return {
+        jobId: `claude-harness-job-${turn}`,
+        result: {
+          status: "completed",
+          sessionId: "claude-builder-session",
+          finalMessage: [
+            "대상 문서 유형을 알려주세요.",
+            "",
+            "```codex-discord-harness-brief",
+            turn === 1
+              ? JSON.stringify(validBrief, null, 2).replace('"openQuestions"', "openQuestions")
+              : JSON.stringify(validBrief),
+            "```",
+          ].join("\n"),
+        },
+      };
+    });
+    const reply = vi.fn().mockResolvedValue({ edit: vi.fn().mockResolvedValue(undefined) });
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...claudeChannelContext,
+        claudeSessionId: "claude-builder-session",
+        discordDeliveryMode: "thread",
+      }),
+      submitCommandJob: vi.fn(),
+      submitClaudePrompt,
+      recordClaudeSession: vi.fn().mockResolvedValue(undefined),
+      harnessStore,
+      harnessValidationRetryAttempts: 1,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+
+    try {
+      await handleMessage({
+        authorBot: false,
+        userId: "discord-user-1",
+        channelId: "claude-builder-thread",
+        content: "문서 리뷰 결과는 체크리스트로 보여줘",
+        roleIds: ["role-operator"],
+        reply,
+      });
+
+      expect(submitClaudePrompt).toHaveBeenCalledTimes(2);
+      expect(submitClaudePrompt).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        queueKey: "claude-builder-thread",
+        payload: expect.objectContaining({
+          sessionId: "claude-builder-session",
+          forkSession: false,
+          harnessBuilder: true,
+          prompt: expect.stringContaining("Connector 자동 형식 복구 요청"),
+        }),
+      }));
+      expect(await harnessStore.buildForChannel("claude-builder-thread")).toMatchObject({
+        interviewPhase: "discovery",
+        interviewTurnCount: 1,
+        error: null,
+      });
+      expect(JSON.stringify(reply.mock.calls)).toContain("자동으로 1회 수정해 복구했습니다");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("forks a linked Codex session into a new Discord thread", async () => {
