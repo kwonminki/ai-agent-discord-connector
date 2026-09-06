@@ -29,6 +29,7 @@ export interface DiscordGuildSurface {
     name: string;
     parentChannelId: string;
   }): Promise<{ id: string } | null>;
+  channelDisplayName?(id: string): Promise<string | null>;
   ensureChannelAvailable?(id: string): Promise<boolean>;
   addThreadMember?(threadId: string, userId: string): Promise<void>;
   sendTextMessage?(

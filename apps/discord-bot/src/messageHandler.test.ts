@@ -2865,13 +2865,13 @@ describe("createDiscordMessageHandler", () => {
         content: `__cdc_harness ${encodeURIComponent(JSON.stringify({
           action: "create",
           source: "fresh",
-          name: "Harness Builder",
           prompt: "안전한 코드 리뷰 하네스를 만들어줘",
         }))}`,
         roleIds: ["role-operator"],
         guild: {
           createCategory: vi.fn(),
           createTextChannel: vi.fn(),
+          channelDisplayName: vi.fn().mockResolvedValue("원래 코드 리뷰 작업"),
           sendTextMessage,
         },
         reply: builderReply,
@@ -2919,6 +2919,9 @@ describe("createDiscordMessageHandler", () => {
         codexSessionId: "harness-builder-session",
         threadName: "Harness Builder",
       });
+      expect(createNewCodexChat).toHaveBeenCalledWith(expect.objectContaining({
+        name: "원래 코드 리뷰 작업 · 🧩 Harness Builder",
+      }));
       const build = await harnessStore.buildForChannel("harness-builder-thread");
       expect(build).toMatchObject({
         status: "validated",
@@ -3242,6 +3245,7 @@ describe("createDiscordMessageHandler", () => {
         guild: {
           createCategory: vi.fn(),
           createTextChannel: vi.fn(),
+          channelDisplayName: vi.fn().mockResolvedValue("원래 배포 작업"),
           sendTextMessage,
           editTextMessage,
           addThreadMember,
@@ -3254,9 +3258,14 @@ describe("createDiscordMessageHandler", () => {
         requestId: "durable-harness-run-1",
         queueKey: "run-thread",
       }));
+      expect(createNewCodexChat).toHaveBeenCalledWith(expect.objectContaining({
+        name: "원래 배포 작업 · 🧰 safe-review v1.0.0",
+      }));
       expect(String(sent[0]?.content)).toContain("조정자 · Codex");
       expect(String(sent[0]?.content)).toContain("실행기 · 격리 Worker");
       expect(sent.some((entry) => String(entry.content).includes("조정자 진행 보고"))).toBe(true);
+      expect(sent.some((entry) => String(entry.content).includes("격리 Worker · 명령 실행 완료"))).toBe(true);
+      expect(sent.some((entry) => String(entry.content).includes("pnpm test"))).toBe(true);
       expect(edits.some((content) => String(content).includes("현재 단계** · 검증"))).toBe(true);
       expect(edits.at(-1)).toEqual(expect.stringContaining("Harness 완료"));
       expect(await harnessStore.runForRequest("durable-harness-run-1")).toMatchObject({
@@ -3264,7 +3273,7 @@ describe("createDiscordMessageHandler", () => {
         executionAgentSessionId: "run-session",
         workerJobId: "durable-harness-run-1",
         progressMessageId: "sent-1",
-        resultMessageId: "sent-3",
+        resultMessageId: "sent-5",
       });
       expect(completeDurableRequest).toHaveBeenCalledWith("durable-harness-run-1");
     } finally {

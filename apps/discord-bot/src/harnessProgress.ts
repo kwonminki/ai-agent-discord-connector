@@ -41,7 +41,13 @@ function compact(value: string, maxLength: number): string {
 }
 
 function visibleReport(value: string): string {
-  return compact(stripHarnessBuilderBlocks(value), MAX_REPORT_LENGTH);
+  return stripHarnessBuilderBlocks(value)
+    .replace(/@/g, "[at]")
+    .trim();
+}
+
+function visibleEventDetail(value: string): string {
+  return value.replace(/@/g, "[at]").trim();
 }
 
 function commandDetail(value: string | undefined): string {
@@ -143,7 +149,7 @@ export function applyHarnessProgressEvent(
     state.stage = reportStage(report);
     state.activeRole = "agent";
     state.activeDetail = "진행 상황과 다음 판단을 정리했습니다.";
-    state.latestReport = report;
+    state.latestReport = compact(report, MAX_REPORT_LENGTH);
     state.agentReports += 1;
     return { state, significant: true, report };
   }
@@ -238,4 +244,49 @@ export function formatHarnessProgressReport(input: {
 }): string {
   const agentLabel = input.provider === "claude" ? "Claude Code" : "Codex";
   return `💬 **${agentLabel} 조정자 진행 보고**\n${input.report}`;
+}
+
+export function formatHarnessProgressEvent(input: {
+  provider: HarnessProvider;
+  event: AgentPromptProgressEvent;
+}): string {
+  const agentLabel = input.provider === "claude" ? "Claude Code" : "Codex";
+  const event = input.event;
+
+  if (event.type === "thread-started") {
+    return [
+      "🔗 **Discord Gateway · Agent session 연결**",
+      `- ${agentLabel} session: \`${visibleEventDetail(event.sessionId)}\``,
+      "- Worker 이벤트 스트림을 Discord 타임라인에 연결했습니다.",
+    ].join("\n");
+  }
+
+  if (event.type === "agent-message") {
+    const report = visibleReport(event.text);
+    return formatHarnessProgressReport({
+      provider: input.provider,
+      report: report || "(빈 진행 보고)",
+    });
+  }
+
+  if (event.type === "agent-thought") {
+    return [
+      `🧠 **${agentLabel} 조정자 · 분석**`,
+      visibleEventDetail(event.text) || "(빈 분석 이벤트)",
+    ].join("\n");
+  }
+
+  if (event.type === "operation-progress") {
+    const detail = visibleEventDetail(event.detail ?? "") || "세부 내용 없음";
+    return [
+      `⚙️ **격리 Worker · ${visibleEventDetail(event.label) || "작업 이벤트"}**`,
+      detail,
+      `- event: \`${visibleEventDetail(event.eventType)}\``,
+    ].join("\n");
+  }
+
+  return [
+    `📡 **${agentLabel} 조정자 · 원시 이벤트**`,
+    `- event: \`${visibleEventDetail(event.eventType)}\``,
+  ].join("\n");
 }

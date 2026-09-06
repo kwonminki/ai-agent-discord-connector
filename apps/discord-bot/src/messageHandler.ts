@@ -60,11 +60,12 @@ import type {
   HarnessStore,
   PublishedHarnessVersionState,
 } from "./harnessStore.js";
+import { harnessBuilderThreadName, harnessRunThreadName } from "./harnessNaming.js";
 import {
   applyHarnessProgressEvent,
   createHarnessProgressState,
   formatHarnessProgress,
-  formatHarnessProgressReport,
+  formatHarnessProgressEvent,
   type HarnessProgressState,
 } from "./harnessProgress.js";
 import type { DiscordMessagePayload } from "./responses.js";
@@ -1133,6 +1134,18 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       : codexSessionIdsByChannel.get(channelId) ?? channelContext.codexSessionId ?? null;
   }
 
+  async function harnessSourceThreadName(
+    message: DiscordMessageLike,
+    sourceChannelId: string,
+  ): Promise<string | null> {
+    try {
+      return await message.guild?.channelDisplayName?.(sourceChannelId) ?? null;
+    } catch (error) {
+      console.warn("discord-bot failed to resolve the Harness source thread name", error);
+      return null;
+    }
+  }
+
   async function prepareHarnessBuilderResponse<T extends { result?: unknown; error?: unknown }>(
     build: HarnessBuildState,
     response: T,
@@ -1239,6 +1252,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     cwd: string;
     sessionId: string | null;
     sessionName?: string | null;
+    onProgress?: (event: AgentPromptProgressEvent) => Promise<void> | void;
   }): Promise<{ response: ControlApiJobResponse; notice: string | null }> {
     let currentBuild = inputRepair.build;
     let currentResponse = inputRepair.response;
@@ -1279,6 +1293,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               effort: settings.effort,
               harnessBuilder: true,
             },
+            onProgress: inputRepair.onProgress,
           })
           : await input.submitCodexPrompt!({
             computerId: inputRepair.channelContext.computerId,
@@ -1299,6 +1314,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               ),
               harnessBuilder: true,
             },
+            onProgress: inputRepair.onProgress,
           });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1438,6 +1454,15 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       await input.harnessStore?.markRunStatus(inputTurn.run.runId, "running");
     }
 
+    const publishBuildProgress = inputTurn.build
+      ? (event: AgentPromptProgressEvent) => publishHarnessTimelineEvent({
+          guild: inputTurn.guild,
+          channelId: inputTurn.thread.discordChannelId,
+          provider: inputTurn.provider,
+          event,
+        })
+      : null;
+
     const handleProgress = async (event: AgentPromptProgressEvent) => {
       if (event.type === "thread-started") {
         streamedSessionId = event.sessionId;
@@ -1451,7 +1476,11 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           });
         }
       }
-      await inputTurn.runProgressReporter?.publish(event);
+      if (publishBuildProgress) {
+        await publishBuildProgress(event);
+      } else {
+        await inputTurn.runProgressReporter?.publish(event);
+      }
     };
 
     if (inputTurn.provider === "claude") {
@@ -1573,6 +1602,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         cwd: inputTurn.thread.cwd,
         sessionId,
         sessionName: inputTurn.thread.threadName,
+        onProgress: publishBuildProgress ?? undefined,
       });
       response = prepared.response;
       candidateNotice = prepared.notice;
@@ -1638,6 +1668,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     sourceMode: HarnessSourceMode;
     sourceChannelId?: string | null;
     sourceSessionId?: string | null;
+    sourceThreadName?: string | null;
     name?: string | null;
     prompt?: string | null;
     reply: DiscordMessageLike["reply"];
@@ -1673,7 +1704,14 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     const exactSourceSessionId = inputRun.sourceMode === "current"
       ? inputRun.sourceSessionId ?? currentSourceSessionId
       : null;
-    const runName = inputRun.name?.trim() || `🧰 ${inputRun.published.harnessId} ${inputRun.published.version}`;
+    const sourceThreadName = inputRun.sourceThreadName?.trim() ||
+      await harnessSourceThreadName(inputRun.message, sourceChannelId);
+    const runName = harnessRunThreadName({
+      sourceName: sourceThreadName,
+      harnessName: inputRun.published.manifest.name || inputRun.published.harnessId,
+      version: inputRun.published.version,
+      requestedName: inputRun.name,
+    });
     let run = inputRun.message.requestId
       ? await input.harnessStore.runForRequest(inputRun.message.requestId)
       : null;
@@ -1863,13 +1901,17 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       const sourceSessionId = sourceMode === "current"
         ? channelAgentSessionId(message.channelId, channelContext, provider)
         : null;
+      const sourceThreadName = await harnessSourceThreadName(message, message.channelId);
       const thread = await createHarnessSessionThread({
         message,
         context: channelContext,
         sourceMode,
         sourceChannelId: message.channelId,
         sourceSessionId,
-        name: request.name?.trim() || "Harness Builder",
+        name: harnessBuilderThreadName({
+          sourceName: sourceThreadName,
+          requestedName: request.name,
+        }),
       });
       let newBuild: HarnessBuildState | null = null;
       let provisioningReply: DiscordReplyLike | void = undefined;
@@ -1879,7 +1921,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           provider,
           sourceMode,
           goal: request.prompt,
-          sourceDiscordChannelId: sourceMode === "current" ? message.channelId : null,
+          sourceDiscordChannelId: message.channelId,
           sourceAgentSessionId: sourceSessionId,
           builderDiscordChannelId: thread.discordChannelId,
         });
@@ -1960,6 +2002,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       }
       await reply(formatHarnessPublished(published));
       if (request.action === "publish-run") {
+        const originalSourceChannelId = build.sourceDiscordChannelId ?? message.channelId;
         await startPublishedHarnessRun({
           message,
           invocationContext: channelContext,
@@ -1971,6 +2014,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           sourceSessionId: (request.source ?? build.sourceMode) === "current"
             ? build.sourceAgentSessionId
             : null,
+          sourceThreadName: await harnessSourceThreadName(message, originalSourceChannelId),
           name: request.name,
           prompt: request.prompt,
           reply,
@@ -2359,6 +2403,27 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     };
   }
 
+  async function publishHarnessTimelineEvent(inputEvent: {
+    guild: DiscordGuildSurface;
+    channelId: string;
+    provider: HarnessProvider;
+    event: AgentPromptProgressEvent;
+  }): Promise<void> {
+    if (!inputEvent.guild.sendTextMessage) {
+      return;
+    }
+    const chunks = splitDiscordMessageContent(
+      formatHarnessProgressEvent({
+        provider: inputEvent.provider,
+        event: inputEvent.event,
+      }),
+      LIVE_PROGRESS_CHUNK_LENGTH,
+    );
+    for (const chunk of chunks) {
+      await inputEvent.guild.sendTextMessage(inputEvent.channelId, chunk);
+    }
+  }
+
   interface HarnessRunProgressReporter {
     start(): Promise<void>;
     publish(event: AgentPromptProgressEvent): Promise<void>;
@@ -2422,22 +2487,6 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       await persist();
     };
 
-    const sendReport = async (report: string) => {
-      if (!inputReporter.guild.sendTextMessage) {
-        return;
-      }
-      const chunks = splitDiscordMessageContent(
-        formatHarnessProgressReport({ provider: state.provider, report }),
-        LIVE_PROGRESS_CHUNK_LENGTH,
-      );
-      for (const chunk of chunks) {
-        await inputReporter.guild.sendTextMessage(
-          inputReporter.run.executionDiscordChannelId,
-          chunk,
-        );
-      }
-    };
-
     return {
       async start() {
         // A restored Gateway reuses the existing card and its persisted counters.
@@ -2449,14 +2498,17 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       async publish(event) {
         receivedEvent = true;
         const update = applyHarnessProgressEvent(state, event);
-        state = update.state;
-        if (update.report) {
-          try {
-            await sendReport(update.report);
-          } catch (error) {
-            console.warn("discord-bot failed to post Harness coordinator progress", error);
-          }
+        try {
+          await publishHarnessTimelineEvent({
+            guild: inputReporter.guild,
+            channelId: inputReporter.run.executionDiscordChannelId,
+            provider: state.provider,
+            event,
+          });
+        } catch (error) {
+          console.warn("discord-bot failed to post a Harness timeline event", error);
         }
+        state = update.state;
         try {
           await render("running", update.significant);
         } catch (error) {
@@ -3300,6 +3352,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       let forkThread: NewCodexChatResult | null = null;
       let forkHarnessBuild: HarnessBuildState | null = null;
       let forkHarnessRun: HarnessRunState | null = null;
+      let forkRunProgressReporter: HarnessRunProgressReporter | null = null;
       const activeForkSessionIds = new Set<string>();
 
       const trackActiveForkSession = (sessionId: string) => {
@@ -3383,6 +3436,23 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             : isClaudeFork
               ? claudeForkPrompt(routed.name)
               : codexForkPrompt(routed.name);
+        if (forkHarnessRun) {
+          forkRunProgressReporter = createHarnessRunProgressReporter({
+            run: forkHarnessRun,
+            guild: message.guild,
+          });
+          await forkRunProgressReporter.start();
+        }
+        const publishForkHarnessProgress = (event: AgentPromptProgressEvent) => forkRunProgressReporter
+          ? forkRunProgressReporter.publish(event)
+          : forkHarnessBuild
+            ? publishHarnessTimelineEvent({
+                guild: message.guild!,
+                channelId: forkThread!.discordChannelId,
+                provider: forkHarnessBuild.provider,
+                event,
+              })
+            : Promise.resolve();
 
         if (isClaudeFork) {
           if (!input.submitClaudePrompt) {
@@ -3407,6 +3477,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               harnessBuilder: Boolean(forkHarnessBuild),
               ...(forkHarnessRun ? { harness: input.harnessStore?.workerBinding(forkHarnessRun) } : {}),
             },
+            onProgress: publishForkHarnessProgress,
           });
 
           const failureMessage = forkResponseErrorMessage(response, "Claude Code");
@@ -3445,6 +3516,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               cwd: forkThread.cwd,
               sessionId: forkSessionId,
               sessionName: forkThread.threadName,
+              onProgress: publishForkHarnessProgress,
             });
             response = prepared.response;
             candidateNotice = prepared.notice;
@@ -3483,6 +3555,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                   discordChannelId: forkThread?.discordChannelId ?? message.channelId,
                 });
               }
+              await publishForkHarnessProgress(event);
             },
             onApprovalRequest: (request) => requestCodexApproval(replyWithRoleMentions, message.channelId, request),
             onUserInputRequest: (request) => requestCodexUserInput(reply, replyWithRoleMentions, message.channelId, request),
@@ -3525,6 +3598,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               cwd: forkThread.cwd,
               sessionId: forkSessionId,
               sessionName: forkThread.threadName,
+              onProgress: publishForkHarnessProgress,
             });
             response = prepared.response;
             candidateNotice = prepared.notice;
@@ -3533,6 +3607,11 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             await input.harnessStore?.bindRunSession(forkHarnessRun.runId, forkSessionId);
           }
           finalMessage = extractAgentResponseFinalMessage(response);
+        }
+
+        if (forkHarnessRun) {
+          await forkRunProgressReporter?.finish("completed");
+          await input.harnessStore?.markRunStatus(forkHarnessRun.runId, "ready");
         }
 
         try {
@@ -3593,6 +3672,10 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           ).catch(() => undefined);
         }
         if (forkHarnessRun) {
+          await forkRunProgressReporter?.finish(
+            "failed",
+            error instanceof Error ? error.message : String(error),
+          ).catch(() => undefined);
           await input.harnessStore?.markRunStatus(
             forkHarnessRun.runId,
             "failed",
@@ -3689,7 +3772,14 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         : null;
       const publishProgress = (event: AgentPromptProgressEvent) => harnessProgressReporter
         ? harnessProgressReporter.publish(event)
-        : progressReporter.publish(event);
+        : harnessBuild && message.guild
+          ? publishHarnessTimelineEvent({
+              guild: message.guild,
+              channelId: message.channelId,
+              provider: "claude",
+              event,
+            })
+          : progressReporter.publish(event);
 
       try {
         if (harnessRun) {
@@ -3749,6 +3839,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             if (event.type === "agent-message" && event.text?.trim()) {
               latestAgentMessage = event.text.trim();
               if (harnessBuild) {
+                await publishProgress(event);
                 recentEvents = appendProgressEvent(recentEvents, "하네스 응답 검증 중...");
                 await updateQueuedReply(
                   queuedReply,
@@ -3817,6 +3908,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             cwd: channelContext.cwd,
             sessionId: streamedSessionId,
             sessionName: null,
+            onProgress: publishProgress,
           });
           responseForDisplay = prepared.response;
           harnessNotice = prepared.notice;
@@ -3972,7 +4064,14 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         : null;
       const publishProgress = (event: AgentPromptProgressEvent) => harnessProgressReporter
         ? harnessProgressReporter.publish(event)
-        : progressReporter.publish(event);
+        : harnessBuild && message.guild
+          ? publishHarnessTimelineEvent({
+              guild: message.guild,
+              channelId: message.channelId,
+              provider: "codex",
+              event,
+            })
+          : progressReporter.publish(event);
 
       try {
         if (harnessRun) {
@@ -4070,6 +4169,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
                 latestAgentMessage = event.text.trim();
               }
               if (harnessBuild) {
+                await publishProgress(event);
                 recentEvents = appendProgressEvent(recentEvents, "하네스 응답 검증 중...");
                 await updateQueuedReply(
                   queuedReply,
@@ -4157,6 +4257,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             cwd: channelContext.cwd,
             sessionId: streamedSessionId,
             sessionName: null,
+            onProgress: publishProgress,
           });
           responseForDisplay = prepared.response;
           harnessNotice = prepared.notice;

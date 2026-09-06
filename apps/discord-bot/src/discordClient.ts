@@ -372,6 +372,13 @@ export function createDiscordGuildSurface(
         throw error;
       }
     },
+    async channelDisplayName(id) {
+      const channel = await guild.channels.fetch(id);
+      return typeof channel === "object" && channel !== null && "name" in channel &&
+        typeof (channel as { name?: unknown }).name === "string"
+        ? (channel as { name: string }).name
+        : null;
+    },
     async addThreadMember(threadId, userId) {
       const channel = await guild.channels.fetch(threadId);
       const members =

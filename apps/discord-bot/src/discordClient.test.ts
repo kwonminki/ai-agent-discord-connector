@@ -298,7 +298,7 @@ describe("attachDiscordMessageHandler", () => {
           Promise.resolve(
             channelId === "admin-channel"
               ? { threads: { create: threadCreate } }
-              : { send, members: { add: addThreadMember } },
+              : { name: "원래 작업 스레드", send, members: { add: addThreadMember } },
           ),
         ),
       },
@@ -320,6 +320,8 @@ describe("attachDiscordMessageHandler", () => {
     ).resolves.toEqual({ id: "message-1" });
     await expect(guildSurface?.addThreadMember?.("thread-1", "discord-user-1"))
       .resolves.toBeUndefined();
+    await expect(guildSurface?.channelDisplayName?.("thread-1"))
+      .resolves.toBe("원래 작업 스레드");
 
     expect(threadCreate).toHaveBeenCalledWith({
       name: "session-thread",

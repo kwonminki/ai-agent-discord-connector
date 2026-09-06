@@ -136,7 +136,7 @@ Builder 스레드는 생성 즉시 링크가 표시되고, agent session 연결�
 
 이 명령은 exact version과 digest로 불변 발행한 뒤 별도 실행 스레드를 만듭니다. 이후 그 스레드의 모든 요청에는 같은 발행본이 다시 주입됩니다. `/harness list`, `/harness status`, `/harness run`으로 발행본을 확인하거나 목록에서 골라 재사용할 수 있습니다. `/harness-help`는 agent 세션이 연결되지 않은 채널에서도 전체 사용법을 바로 보여줍니다. Builder 스레드와 실행 스레드에서 `/fork`하면 각각 설계 상태와 exact 실행 버전을 유지한 별도 agent 세션이 만들어집니다.
 
-실행 스레드가 만들어지면 요청자는 자동으로 스레드 멤버가 됩니다. 고정형 진행 카드에는 **Codex/Claude Code 조정자**, **격리 Worker**, **Discord Gateway**의 역할, 현재 담당, 단계, 최근 보고, 명령·파일 수정·검증 누계가 표시됩니다. 의미 있는 Agent 진행 보고는 별도 타임라인 메시지로도 남습니다. Gateway가 실행 중 재시작되더라도 저장된 Discord 요청 ID, Worker job ID, 실행 스레드와 진행 카드 ID를 이용해 같은 작업에 다시 연결하며 새 실행을 중복 생성하지 않습니다.
+Builder와 실행 스레드의 이름은 별도 입력이 없으면 원본 Discord 스레드 이름에서 자동 생성됩니다. 예: `원본 작업 · 🧩 Harness Builder`, `원본 작업 · 🧰 safe-review v1.0.0`. 실행 스레드가 만들어지면 요청자는 자동으로 스레드 멤버가 됩니다. 고정형 진행 카드에는 **Codex/Claude Code 조정자**, **격리 Worker**, **Discord Gateway**의 역할, 현재 담당, 단계, 최근 보고, 명령·파일 수정·검증 누계가 표시됩니다. 그와 별도로 Builder와 Run의 Agent 보고, 분석, 명령 시작·완료, 파일 수정, 검증, lifecycle event를 생략 없이 전체 내용으로 타임라인에 계속 남깁니다. 긴 이벤트는 내용 손실 없이 여러 Discord 메시지로 나눕니다. Gateway가 실행 중 재시작되더라도 저장된 Discord 요청 ID, Worker job ID, 실행 스레드와 진행 카드 ID를 이용해 같은 작업에 다시 연결하며 새 실행을 중복 생성하지 않습니다.
 
 ### 자주 쓰는 명령
 

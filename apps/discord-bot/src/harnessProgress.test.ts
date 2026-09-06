@@ -3,6 +3,7 @@ import {
   applyHarnessProgressEvent,
   createHarnessProgressState,
   formatHarnessProgress,
+  formatHarnessProgressEvent,
 } from "./harnessProgress.js";
 
 describe("harness progress", () => {
@@ -57,5 +58,29 @@ describe("harness progress", () => {
     expect(update.report).toBe("테스트를 시작합니다.");
     expect(update.state).toMatchObject({ stage: "검증", activeRole: "agent", agentReports: 1 });
     expect(formatHarnessProgress(update.state)).not.toContain("secret");
+  });
+
+  it("renders every event with its full visible detail", () => {
+    const longOutput = `명령: pnpm test · 위치: /repo · 출력: ${"검증 결과 ".repeat(100)}`;
+    const rendered = formatHarnessProgressEvent({
+      provider: "codex",
+      event: {
+        type: "operation-progress",
+        label: "명령 실행 완료",
+        detail: longOutput,
+        eventType: "item/completed",
+      },
+    });
+
+    expect(rendered).toContain(longOutput.trim());
+    expect(rendered).toContain("격리 Worker · 명령 실행 완료");
+    expect(rendered).toContain("item/completed");
+  });
+
+  it("shows coordinator analysis text instead of a generic placeholder", () => {
+    expect(formatHarnessProgressEvent({
+      provider: "claude",
+      event: { type: "agent-thought", text: "배포 전 dirty tree를 다시 확인합니다." },
+    })).toContain("배포 전 dirty tree를 다시 확인합니다.");
   });
 });
