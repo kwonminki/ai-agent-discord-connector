@@ -2412,11 +2412,15 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     if (!inputEvent.guild.sendTextMessage) {
       return;
     }
+    const formatted = formatHarnessProgressEvent({
+      provider: inputEvent.provider,
+      event: inputEvent.event,
+    });
+    if (!formatted) {
+      return;
+    }
     const chunks = splitDiscordMessageContent(
-      formatHarnessProgressEvent({
-        provider: inputEvent.provider,
-        event: inputEvent.event,
-      }),
+      formatted,
       LIVE_PROGRESS_CHUNK_LENGTH,
     );
     for (const chunk of chunks) {

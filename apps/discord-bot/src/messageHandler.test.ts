@@ -3184,6 +3184,17 @@ describe("createDiscordMessageHandler", () => {
     });
     const submitCodexPrompt = vi.fn(async (request) => {
       await request.onProgress?.({ type: "thread-started", sessionId: "run-session" });
+      await request.onProgress?.({
+        type: "operation-progress",
+        label: "생각 중",
+        eventType: "item/started",
+      });
+      await request.onProgress?.({
+        type: "operation-progress",
+        label: "작업 단계 실행 중",
+        detail: "$safe-review immutable harness Run ID: run-1 사용자 요청: 검토해줘",
+        eventType: "item/started",
+      });
       await request.onProgress?.({ type: "agent-message", text: "코드를 조사하고 회귀 테스트를 준비합니다." });
       await request.onProgress?.({
         type: "operation-progress",
@@ -3261,11 +3272,13 @@ describe("createDiscordMessageHandler", () => {
       expect(createNewCodexChat).toHaveBeenCalledWith(expect.objectContaining({
         name: "원래 배포 작업 · 🧰 safe-review v1.0.0",
       }));
-      expect(String(sent[0]?.content)).toContain("조정자 · Codex");
-      expect(String(sent[0]?.content)).toContain("실행기 · 격리 Worker");
-      expect(sent.some((entry) => String(entry.content).includes("조정자 진행 보고"))).toBe(true);
-      expect(sent.some((entry) => String(entry.content).includes("격리 Worker · 명령 실행 완료"))).toBe(true);
+      expect(String(sent[0]?.content)).toContain("메인 에이전트 · Codex");
+      expect(String(sent[0]?.content)).toContain("도구 실행기 · Connector Worker");
+      expect(sent.some((entry) => String(entry.content).includes("메인 에이전트 · 진행 보고"))).toBe(true);
+      expect(sent.some((entry) => String(entry.content).includes("도구 실행기 (Connector Worker) · 명령 실행 완료"))).toBe(true);
       expect(sent.some((entry) => String(entry.content).includes("pnpm test"))).toBe(true);
+      expect(sent.some((entry) => String(entry.content).includes("세부 내용 없음"))).toBe(false);
+      expect(sent.some((entry) => String(entry.content).includes("사용자 요청: 검토해줘"))).toBe(false);
       expect(edits.some((content) => String(content).includes("현재 단계** · 검증"))).toBe(true);
       expect(edits.at(-1)).toEqual(expect.stringContaining("Harness 완료"));
       expect(await harnessStore.runForRequest("durable-harness-run-1")).toMatchObject({
@@ -3276,6 +3289,100 @@ describe("createDiscordMessageHandler", () => {
         resultMessageId: "sent-5",
       });
       expect(completeDurableRequest).toHaveBeenCalledWith("durable-harness-run-1");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Harness Run chat, steering, and interrupt bound to the exact execution thread", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "discord-harness-controls-"));
+    const { harnessStore } = await seedPublishedHarness(tempRoot);
+    const published = await harnessStore.resolvePublished("safe-review");
+    expect(published).not.toBeNull();
+    const run = await harnessStore.createRun({
+      provider: "codex",
+      published: published!,
+      sourceMode: "fresh",
+      executionDiscordChannelId: "harness-run-thread",
+      requestId: "harness-run-initial-request",
+    });
+    await harnessStore.bindRunSession(run.runId, "harness-run-session");
+
+    let finishPrompt: (value: unknown) => void = () => {
+      throw new Error("Harness prompt completion was not initialized");
+    };
+    let promptStarted = false;
+    const submitCodexPrompt = vi.fn().mockImplementation(
+      () => new Promise((resolve) => {
+        finishPrompt = resolve;
+        promptStarted = true;
+      }),
+    );
+    const controlCodexTurn = vi.fn()
+      .mockResolvedValueOnce({ status: "accepted", message: "steered" })
+      .mockResolvedValueOnce({ status: "accepted", message: "interrupted" });
+    const handleMessage = createDiscordMessageHandler({
+      resolveChannelContext: async () => ({
+        ...sessionChannelContext,
+        codexSessionId: "harness-run-session",
+        discordDeliveryMode: "thread",
+      }),
+      submitCommandJob: vi.fn(),
+      submitCodexPrompt,
+      controlCodexTurn,
+      harnessStore,
+      updateChannelCwd: vi.fn(),
+      recordCommandAudit: vi.fn(),
+    });
+    const message = (content: string) => ({
+      authorBot: false,
+      userId: "discord-user-1",
+      channelId: "harness-run-thread",
+      content,
+      roleIds: ["role-operator"],
+      reply: vi.fn().mockResolvedValue({ edit: vi.fn().mockResolvedValue(undefined) }),
+    });
+
+    try {
+      const active = handleMessage(message("이 Harness로 변경을 검토해줘"));
+      await vi.waitFor(() => expect(promptStarted).toBe(true));
+
+      expect(submitCodexPrompt).toHaveBeenCalledWith(expect.objectContaining({
+        payload: expect.objectContaining({
+          controlKey: "harness-run-thread",
+          sessionId: "harness-run-session",
+          harness: expect.objectContaining({
+            runId: run.runId,
+            harnessVersionId: published!.harnessVersionId,
+          }),
+        }),
+      }));
+
+      await handleMessage(message("안전성 검토를 먼저 해줘"));
+      await handleMessage(message("interrupt"));
+
+      expect(controlCodexTurn).toHaveBeenNthCalledWith(1, {
+        computerId: "computer-1",
+        controlKey: "harness-run-thread",
+        action: "steer",
+        content: "안전성 검토를 먼저 해줘",
+      });
+      expect(controlCodexTurn).toHaveBeenNthCalledWith(2, {
+        computerId: "computer-1",
+        controlKey: "harness-run-thread",
+        action: "interrupt",
+      });
+      expect(submitCodexPrompt).toHaveBeenCalledTimes(1);
+
+      finishPrompt({
+        jobId: "harness-job-1",
+        result: {
+          status: "failed",
+          finalMessage: "요청에 따라 중단했습니다.",
+          sessionId: "harness-run-session",
+        },
+      });
+      await active;
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
