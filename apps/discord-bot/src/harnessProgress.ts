@@ -94,19 +94,6 @@ function commandPurpose(stage: string): string {
   return "메인 에이전트가 선택한 작업을 로컬 환경에서 실행";
 }
 
-function commandOutcome(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  const exitCode = value.match(/(?:^|\s+·\s+)종료 코드:\s*(-?\d+)/)?.[1];
-  const duration = value.match(/(?:^|\s+·\s+)소요:\s*([^·]+)/)?.[1]?.trim();
-  const parts = [
-    exitCode === undefined ? null : `종료 코드 ${exitCode}`,
-    duration ? `소요 ${duration}` : null,
-  ].filter((part): part is string => Boolean(part));
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
-
 function shouldHideOperationEvent(event: Extract<AgentPromptProgressEvent, { type: "operation-progress" }>): boolean {
   const detail = visibleEventDetail(event.detail ?? "");
 
@@ -127,6 +114,14 @@ function shouldHideOperationEvent(event: Extract<AgentPromptProgressEvent, { typ
     /immutable harness/i.test(detail) ||
     /Run ID:/i.test(detail) ||
     /사용자 요청:/i.test(detail)
+  );
+}
+
+function isSubagentControlOperation(
+  event: Extract<AgentPromptProgressEvent, { type: "operation-progress" }>,
+): boolean {
+  return /(?:subagent|spawn_agent|send_message|followup_task|wait_agent|collaboration[./])/i.test(
+    `${event.label} ${event.detail ?? ""} ${event.eventType}`,
   );
 }
 
@@ -235,7 +230,7 @@ export function applyHarnessProgressEvent(
   if (event.label === "파일 수정 중" || event.label === "파일 수정 완료") {
     state.stage = "구현";
     state.activeRole = "worker";
-    state.activeDetail = `변경 구현 · ${compact(event.detail ?? event.label, MAX_DETAIL_LENGTH)}`;
+    state.activeDetail = "메인 에이전트가 결정한 파일 변경을 내부에서 적용하고 있습니다.";
     if (event.label === "파일 수정 완료") {
       state.fileEdits += 1;
     }
@@ -247,7 +242,7 @@ export function applyHarnessProgressEvent(
     const classification = commandStage(detail);
     state.stage = classification.stage;
     state.activeRole = "worker";
-    state.activeDetail = `${commandPurpose(classification.stage)} · ${detail}`;
+    state.activeDetail = `${commandPurpose(classification.stage)} · 세부 명령과 출력은 표시하지 않습니다.`;
     if (event.label === "명령 실행 완료") {
       state.commands += 1;
       state.checks += classification.checks;
@@ -268,8 +263,15 @@ export function applyHarnessProgressEvent(
     return { state, significant: false, report: null };
   }
 
+  if (isSubagentControlOperation(event)) {
+    state.stage = "위임·조정";
+    state.activeRole = "agent";
+    state.activeDetail = "하위 에이전트 작업을 위임하거나 결과를 회수하고 있습니다.";
+    return { state, significant: true, report: null };
+  }
+
   state.activeRole = "worker";
-  state.activeDetail = compact(event.detail ?? event.label ?? "작업 중", MAX_DETAIL_LENGTH);
+  state.activeDetail = "메인 에이전트가 요청한 도구 작업을 내부에서 수행하고 있습니다.";
   return { state, significant: false, report: null };
 }
 
@@ -286,7 +288,7 @@ export function formatHarnessProgress(
     "",
     "**역할**",
     `- 메인 에이전트 · ${currentAgentLabel}: 이 스레드의 대화와 판단을 이어가는 주체`,
-    `- 도구 실행기 · Connector Worker: ${currentAgentLabel}가 지시한 명령·편집·검증을 수행하며 별도의 판단 Agent는 아님`,
+    `- 도구 실행기 · Connector Worker: ${currentAgentLabel}가 지시한 명령·편집·검증을 수행하되 개별 내용은 Discord에 출력하지 않으며, 별도의 판단 Agent는 아님`,
     `- 하위 에이전트 · ${currentAgentLabel} subagent: 실제로 위임된 경우에만 이름과 맡은 일을 표시`,
     "- 전달자 · Discord Gateway: 진행 카드 갱신, 질문과 최종 결과 전달",
     "",
@@ -318,7 +320,7 @@ export function formatHarnessProgressEvent(input: {
     return [
       "🔗 **Discord Gateway · Agent session 연결**",
       `- ${currentAgentLabel} session: \`${visibleEventDetail(event.sessionId)}\``,
-      `- 역할: ${currentAgentLabel}와 Connector Worker의 실행 이벤트를 이 스레드에 전달`,
+      `- 역할: ${currentAgentLabel}의 진행 보고와 최종 결과를 전달하고 Worker 활동은 진행 카드에 집계`,
     ].join("\n");
   }
 
@@ -368,32 +370,7 @@ export function formatHarnessProgressEvent(input: {
       ].join("\n");
     }
 
-    if (event.label === "명령 실행 중" || event.label === "명령 실행 완료") {
-      const command = commandDetail(event.detail);
-      const classification = commandStage(command);
-      const outcome = event.label === "명령 실행 완료" ? commandOutcome(event.detail) : null;
-      return [
-        `⚙️ **${currentAgentLabel} 도구 실행기 (Connector Worker) · ${visibleEventDetail(event.label)}**`,
-        `- 역할: ${currentAgentLabel} 메인 에이전트가 선택한 로컬 명령을 실행`,
-        `- 목적: ${commandPurpose(classification.stage)}`,
-        `- 명령: ${command}`,
-        outcome ? `- 결과: ${outcome}` : null,
-      ].filter((line): line is string => line !== null).join("\n");
-    }
-
-    if (event.label === "파일 수정 중" || event.label === "파일 수정 완료") {
-      return [
-        `📝 **${currentAgentLabel} 도구 실행기 (Connector Worker) · ${visibleEventDetail(event.label)}**`,
-        `- 역할: ${currentAgentLabel} 메인 에이전트가 결정한 변경을 파일에 반영`,
-        "- 목적: 코드 또는 문서 변경 구현",
-        `- 대상: ${compact(detail, MAX_REPORT_LENGTH)}`,
-      ].join("\n");
-    }
-
-    const isSubagentControl = /(?:subagent|spawn_agent|send_message|followup_task|wait_agent|collaboration[./])/i.test(
-      `${event.label} ${detail} ${event.eventType}`,
-    );
-    if (isSubagentControl) {
+    if (isSubagentControlOperation(event)) {
       return [
         `🧑‍🤝‍🧑 **${currentAgentLabel} 하위 에이전트 제어 · ${visibleEventDetail(event.label)}**`,
         "- 역할: 메인 에이전트가 독립 작업을 위임하거나 결과를 회수",
@@ -401,11 +378,12 @@ export function formatHarnessProgressEvent(input: {
       ].join("\n");
     }
 
-    return [
-      `🔧 **${currentAgentLabel} 도구 실행기 (Connector Worker) · ${visibleEventDetail(event.label) || "작업 이벤트"}**`,
-      `- 역할: ${currentAgentLabel} 메인 에이전트가 요청한 도구 작업을 수행`,
-      `- 목적/내용: ${compact(detail, MAX_REPORT_LENGTH)}`,
-    ].join("\n");
+    // Connector Worker events can contain commands, paths, tool arguments,
+    // patches, stdout, or tool results. Keep their aggregate counters and
+    // stage in the single progress card, but never publish them as timeline
+    // messages. The main-agent reports, plans, and real subagent activity stay
+    // visible so a long Harness run still explains its decisions.
+    return null;
   }
 
   return null;

@@ -3275,8 +3275,8 @@ describe("createDiscordMessageHandler", () => {
       expect(String(sent[0]?.content)).toContain("메인 에이전트 · Codex");
       expect(String(sent[0]?.content)).toContain("도구 실행기 · Connector Worker");
       expect(sent.some((entry) => String(entry.content).includes("메인 에이전트 · 진행 보고"))).toBe(true);
-      expect(sent.some((entry) => String(entry.content).includes("도구 실행기 (Connector Worker) · 명령 실행 완료"))).toBe(true);
-      expect(sent.some((entry) => String(entry.content).includes("pnpm test"))).toBe(true);
+      expect(sent.some((entry) => String(entry.content).includes("도구 실행기 (Connector Worker) · 명령 실행 완료"))).toBe(false);
+      expect(sent.some((entry) => String(entry.content).includes("pnpm test"))).toBe(false);
       expect(sent.some((entry) => String(entry.content).includes("세부 내용 없음"))).toBe(false);
       expect(sent.some((entry) => String(entry.content).includes("사용자 요청: 검토해줘"))).toBe(false);
       expect(edits.some((content) => String(content).includes("현재 단계** · 검증"))).toBe(true);
@@ -3286,7 +3286,7 @@ describe("createDiscordMessageHandler", () => {
         executionAgentSessionId: "run-session",
         workerJobId: "durable-harness-run-1",
         progressMessageId: "sent-1",
-        resultMessageId: "sent-5",
+        resultMessageId: "sent-4",
       });
       expect(completeDurableRequest).toHaveBeenCalledWith("durable-harness-run-1");
     } finally {

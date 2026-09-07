@@ -17,6 +17,7 @@ describe("harness progress", () => {
 
     expect(formatHarnessProgress(state)).toContain("메인 에이전트 · Codex");
     expect(formatHarnessProgress(state)).toContain("도구 실행기 · Connector Worker");
+    expect(formatHarnessProgress(state)).toContain("개별 내용은 Discord에 출력하지 않으며");
     expect(formatHarnessProgress(state)).toContain("별도의 판단 Agent는 아님");
     expect(formatHarnessProgress(state)).toContain("하위 에이전트 · Codex subagent");
     expect(formatHarnessProgress(state)).toContain("전달자 · Discord Gateway");
@@ -43,7 +44,7 @@ describe("harness progress", () => {
       checks: 1,
     });
     expect(update.state.activeDetail).toBe(
-      "변경 사항이 요구 조건과 회귀 검증을 통과하는지 확인 · pnpm test -- --runInBand",
+      "변경 사항이 요구 조건과 회귀 검증을 통과하는지 확인 · 세부 명령과 출력은 표시하지 않습니다.",
     );
     expect(update.significant).toBe(true);
   });
@@ -64,9 +65,9 @@ describe("harness progress", () => {
     expect(formatHarnessProgress(update.state)).not.toContain("secret");
   });
 
-  it("renders a command with its actor, purpose, command, and outcome instead of raw output", () => {
+  it("keeps tool executor commands, file changes, and tool results out of the timeline", () => {
     const longOutput = `명령: pnpm test · 위치: /repo · 출력: ${"검증 결과 ".repeat(100)}`;
-    const rendered = formatHarnessProgressEvent({
+    expect(formatHarnessProgressEvent({
       provider: "codex",
       event: {
         type: "operation-progress",
@@ -74,13 +75,25 @@ describe("harness progress", () => {
         detail: longOutput,
         eventType: "item/completed",
       },
-    });
-
-    expect(rendered).toContain("Codex 도구 실행기 (Connector Worker) · 명령 실행 완료");
-    expect(rendered).toContain("변경 사항이 요구 조건과 회귀 검증을 통과하는지 확인");
-    expect(rendered).toContain("pnpm test");
-    expect(rendered).not.toContain("검증 결과 검증 결과");
-    expect(rendered).not.toContain("item/completed");
+    })).toBeNull();
+    expect(formatHarnessProgressEvent({
+      provider: "codex",
+      event: {
+        type: "operation-progress",
+        label: "파일 수정 완료",
+        detail: "update src/private.ts (+10 -2)",
+        eventType: "item/completed",
+      },
+    })).toBeNull();
+    expect(formatHarnessProgressEvent({
+      provider: "claude",
+      event: {
+        type: "operation-progress",
+        label: "Claude 도구 실행 완료",
+        detail: "도구: internal/result · 결과: private output",
+        eventType: "tool/completed",
+      },
+    })).toBeNull();
   });
 
   it("shows main-agent analysis text instead of a generic placeholder", () => {
