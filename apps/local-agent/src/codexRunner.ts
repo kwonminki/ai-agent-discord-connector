@@ -1,3 +1,5 @@
+import { guidancePrompt, prepareAgentGuidance } from "./agentGuidanceRuntime.js";
+import type { AgentGuidance } from "../../../packages/core/src/agentGuidance.js";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, unlink } from "node:fs/promises";
@@ -20,6 +22,7 @@ export interface RunCodexPromptInput {
   model?: string | null;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | null;
   controlKey?: string;
+  guidance?: AgentGuidance;
   harnessBuilder?: boolean;
   harness?: HarnessWorkerBinding;
   onApprovalRequest?: (request: CodexApprovalRequest) => Promise<CodexApprovalDecision> | CodexApprovalDecision;
@@ -763,6 +766,11 @@ async function generatedImageMarkdown(input: {
 }
 
 export async function runCodexPrompt(input: RunCodexPromptInput): Promise<RunCodexPromptResult> {
+  if (input.guidance) {
+    const prepared = await prepareAgentGuidance(input.guidance);
+    input = { ...input, prompt: guidancePrompt(prepared, input.prompt) };
+  }
+
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-discord-run-"));
   const outputPath = path.join(tempRoot, `${randomBytes(8).toString("hex")}.txt`);
   const workspaceRoot = await ensureAsciiWorkspaceRoot(input.workspaceRoot);

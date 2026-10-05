@@ -1,3 +1,5 @@
+export * from "./agentGuidance.js";
+
 export * from "./agentRelay.js";
 export * from "./connectorDiscovery.js";
 export * from "./discordMessages.js";

@@ -1,7 +1,8 @@
+import { DEFAULT_AGENT_GUIDANCE, PURE_AGENT_GUIDANCE } from "../../../packages/core/src/agentGuidance.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -1322,4 +1323,40 @@ describe("runCodexAppServerPrompt", () => {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
+  it("sends the current linked AGENTS profile on fresh and resumed Codex turns, including pure", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-guidance-"));
+    const httpServer = createServer();
+    const server = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
+    const prompts: string[] = [];
+    try {
+      const appServerUrl = await listenOnLoopback(httpServer);
+      server.on("connection", (socket) => socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString());
+        if (message.method === "initialize") socket.send(JSON.stringify({ id:message.id, result:{} }));
+        if (message.method === "thread/start" || message.method === "thread/resume") socket.send(JSON.stringify({ id:message.id, result:{thread:{id:"guidance-thread"}} }));
+        if (message.method === "turn/start") {
+          prompts.push(message.params.input[0].text);
+          socket.send(JSON.stringify({ id:message.id, result:{turn:{id:"guidance-turn"}} }));
+          socket.send(JSON.stringify({ method:"item/completed", params:{threadId:"guidance-thread",turnId:"guidance-turn",item:{id:"answer",type:"agentMessage",text:"ok"}} }));
+          socket.send(JSON.stringify({ method:"turn/completed", params:{threadId:"guidance-thread",turn:{id:"guidance-turn",status:"completed"}} }));
+        }
+      }));
+      for (const guidance of [DEFAULT_AGENT_GUIDANCE, { ...DEFAULT_AGENT_GUIDANCE, style:"tldr" }, PURE_AGENT_GUIDANCE]) {
+        const result = await runCodexAppServerPrompt({ workspaceRoot:root,cwd:root,prompt:"write code",timeoutMs:5000,appServerUrl,guidance,sessionId:prompts.length ? "guidance-thread" : null });
+        expect(result.status).toBe("completed");
+      }
+      const files = prompts.map((prompt) => prompt.match(/\[AGENTS\.md\]\(<(.+)>\)/)![1]);
+      expect(new Set(files).size).toBe(3);
+      expect(await readFile(files[0],"utf8")).toContain("attention-kind");
+      expect(await readFile(files[1],"utf8")).toContain("tldr");
+      expect(await readFile(files[2],"utf8")).not.toContain("./raw/");
+      expect(prompts.every((prompt) => prompt.endsWith("write code"))).toBe(true);
+    } finally {
+      for (const client of server.clients) client.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await rm(root,{recursive:true,force:true});
+    }
+  });
+
 });

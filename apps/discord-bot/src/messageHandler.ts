@@ -1,3 +1,5 @@
+import { agentGuidancePanel, parseAgentGuidanceCommand } from "./agentGuidanceCommands.js";
+import type { AgentGuidanceStore } from "./agentGuidanceStore.js";
 import {
   classifyCommand,
   extractHarnessCandidate,
@@ -342,6 +344,7 @@ export interface CreateDiscordMessageHandlerInput {
     content: string;
   }) => Promise<{ content: string; files: MaterializedDiscordAttachment[] }>;
   harnessStore?: HarnessStore;
+  guidanceStore?: AgentGuidanceStore;
 }
 
 export interface DiscordMessageHandler {
@@ -884,6 +887,39 @@ function relayWaitingMessage(locale: ConnectorLocale | undefined, activeThreadId
 }
 
 export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerInput): DiscordMessageHandler {
+  if (input.guidanceStore) {
+    const store = input.guidanceStore;
+    const resolveGuidance = async (channelId?: string) => {
+      if (!channelId) throw new Error("Guidance requires a Discord channel ID");
+      const context = await input.resolveChannelContext(channelId);
+      if (!context) throw new Error("Guidance channel context is unavailable");
+      return store.get({ channelId, parentId: context.discordParentChannelId });
+    };
+    const codex = input.submitCodexPrompt;
+    const claude = input.submitClaudePrompt;
+    input = {
+      ...input,
+      ...(codex ? {
+        submitCodexPrompt: async (request) => codex({
+          ...request,
+          payload: {
+            ...request.payload,
+            guidance: await resolveGuidance(request.queueKey ?? request.payload.controlKey),
+          },
+        }),
+      } : {}),
+      ...(claude ? {
+        submitClaudePrompt: async (request) => claude({
+          ...request,
+          payload: {
+            ...request.payload,
+            guidance: await resolveGuidance(request.queueKey ?? request.payload.controlKey),
+          },
+        }),
+      } : {}),
+    };
+  }
+
   interface QueuedMessage {
     message: DiscordMessageLike;
     resolve(): void;
@@ -3157,6 +3193,26 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       return;
     }
 
+    if (routed.type === "agent-guidance") {
+      const store = input.guidanceStore;
+      if (!store) {
+        await reply("이 Gateway에는 스타일·스킬 설정이 연결되지 않았습니다.");
+        return;
+      }
+      const scope = { channelId: message.channelId, parentId: channelContext.discordParentChannelId };
+      const request = routed.request;
+      if (request.action === "invalid") {
+        await reply("/set_style, /set_skill skill:<이름> enabled:<true/false>, /pure, /skills_reset을 사용하세요.");
+        return;
+      }
+      if (request.action === "style") await store.setStyle(scope, request.style);
+      if (request.action === "skill") await store.setSkill(scope, request.skill, request.enabled);
+      if (request.action === "pure") await store.pure(scope);
+      if (request.action === "reset") await store.reset(scope);
+      await reply(agentGuidancePanel(await store.get(scope), Boolean(channelContext.agentMain)));
+      return;
+    }
+
     if (routed.type === "agent-model") {
       await agentSettingsController.updateModel(message.channelId, channelContext, routed.model);
       const settings = agentSettingsController.get(message.channelId, channelContext);
@@ -3388,6 +3444,11 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           sourceSessionId,
           name: routed.name,
         });
+
+        await input.guidanceStore?.copy(
+          { channelId: message.channelId, parentId: channelContext.discordParentChannelId },
+          { channelId: forkThread.discordChannelId },
+        );
 
         if (sourceHarnessBuild && input.harnessStore) {
           forkHarnessBuild = await input.harnessStore.createBuild({
@@ -4616,6 +4677,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
 
     const immediateControl = Boolean(
+      parseAgentGuidanceCommand(message.content) ||
       parseCodexApprovalResponse(message.content) ||
       parseCodexUserInputSelection(message.content) ||
       isImmediateQueueControl(message.content) ||

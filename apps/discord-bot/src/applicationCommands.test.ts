@@ -32,6 +32,11 @@ function options(input: Record<string, string | number | boolean | null>) {
 describe("Discord application commands", () => {
   it("defines native slash commands for common Codex and bridge actions", () => {
     expect(DISCORD_APPLICATION_COMMANDS.map((command) => command.name)).toEqual([
+      "set_style",
+      "set_skill",
+      "skills",
+      "skills_reset",
+      "pure",
       "codex",
       "codex-command",
       "compact",

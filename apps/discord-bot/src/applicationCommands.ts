@@ -1,3 +1,4 @@
+import { AGENT_STYLES, AGENT_SKILLS } from "../../../packages/core/src/agentGuidance.js";
 import {
   localizeConnectorText,
   type ConnectorLocale,
@@ -120,6 +121,33 @@ function booleanOption(input: {
 }
 
 export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDefinition[] = [
+  {
+    name: "set_style",
+    description: "응답 스타일 선택 메뉴를 엽니다.",
+    options: [stringOption({
+      name: "style",
+      description: "적용할 스타일",
+      choices: [
+        ...AGENT_STYLES.map((style) => ({ name: style.label, value: style.id })),
+        { name: "끔", value: "off" },
+        { name: "상속", value: "inherit" },
+      ],
+    })],
+  },
+  {
+    name: "set_skill",
+    description: "기본 스킬을 개별적으로 켜거나 끕니다.",
+    options: [
+      stringOption({
+        name: "skill", description: "스킬", required: true,
+        choices: AGENT_SKILLS.map((skill) => ({ name: skill.label, value: skill.id })),
+      }),
+      booleanOption({ name: "enabled", description: "켜기 / 끄기", required: true }),
+    ],
+  },
+  { name: "skills", description: "현재 스타일과 스킬 설정을 확인합니다." },
+  { name: "skills_reset", description: "스타일과 스킬을 부모 채널 또는 기본값으로 복원합니다." },
+  { name: "pure", description: "이 채널의 커넥터 스타일과 스킬을 모두 끕니다." },
   {
     name: "codex",
     description: "Codex에게 자연어로 요청합니다.",
@@ -853,6 +881,17 @@ export function routeDiscordApplicationCommand(
       const level = interaction.options.getString("level", true)?.trim().toLowerCase();
       return level ? `effort ${level}` : null;
     }
+    case "set_style":
+      return `set_style ${interaction.options.getString("style") ?? ""}`.trim();
+    case "set_skill": {
+      const skill = interaction.options.getString("skill", true);
+      const enabled = interaction.options.getBoolean?.("enabled", true);
+      return skill && typeof enabled === "boolean" ? `set_skill ${skill} ${enabled ? "on" : "off"}` : null;
+    }
+    case "skills":
+    case "skills_reset":
+    case "pure":
+      return interaction.commandName;
     case "settings":
       return "settings";
     case "fast":

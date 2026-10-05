@@ -86,6 +86,12 @@ Connector와 Agent Relay Coordinator UI는 다음 언어를 지원합니다.
 
 ## Discord에서 사용하기
 
+### 스타일과 기본 스킬
+
+기본 스타일은 `attention-kind`이며 코딩 전 Karpathy 지침, 완료 전 검증 지침을 함께 사용합니다. `/set_style` 드롭다운에서 `attention-kind`, `rundown`, `spartan`, `tldr`을 고르고, `/set_skill`로 스킬을 개별 설정할 수 있습니다. `/pure`는 커넥터가 추가한 스타일·스킬을 모두 끄고, `/skills_reset`은 부모 채널 또는 기본값을 복원합니다. 설정은 다음 요청부터 적용되고 재시작 후에도 유지됩니다.
+
+Claude Code에는 네이티브 output style로, Codex에는 원문 파일을 링크한 `AGENTS.md`로 전달합니다. [사용법·확장 구조](docs/agent-guidance.ko.md), [원문 출처·라이선스](agent-assets/README.md), [미적용 Python anti-slop 제안](docs/python-anti-slop-proposal.ko.md)을 참고하세요.
+
 ### 새 채팅
 
 Codex 또는 Claude Code 부모 채널에서 `/chat-new`를 실행하면 새 Discord 스레드와 agent 세션이 만들어집니다.

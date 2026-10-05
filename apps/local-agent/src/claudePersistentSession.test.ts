@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_GUIDANCE, PURE_AGENT_GUIDANCE } from "../../../packages/core/src/agentGuidance.js";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -429,4 +430,37 @@ describe("persistent Claude Code sessions", () => {
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+  it.each(["inline", "relative-file"])("reloads the Claude session for style changes and pure, preserving %s settings", async (settingsMode) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "claude-guidance-"));
+    const fake = await createPersistentFakeClaude(root);
+    const originalSettings = JSON.stringify({ env: { PRESERVED_SETTING: "yes" } });
+    await writeFile(path.join(root, "claude-settings.json"), originalSettings);
+    const base = { workspaceRoot: root, cwd: root, prompt: "write code", timeoutMs: 5000,
+      controlKey: "guidance-session", claudeCommand: fake.fakeClaude, persistentSession: true,
+      settings: settingsMode === "inline" ? originalSettings : "./claude-settings.json" };
+    try {
+      const first = await runClaudePrompt({ ...base, guidance: DEFAULT_AGENT_GUIDANCE });
+      expect(first.status).toBe("completed");
+      const firstInput = JSON.parse(await readFile(fake.inputsPath, "utf8"));
+      expect(firstInput[0].message.content[0].text).toContain("AGENTS.md");
+      const second = await runClaudePrompt({ ...base, sessionId: first.sessionId, guidance: { ...DEFAULT_AGENT_GUIDANCE, style: "tldr" } });
+      expect(second.status).toBe("completed");
+      const third = await runClaudePrompt({ ...base, sessionId: second.sessionId, guidance: PURE_AGENT_GUIDANCE });
+      expect(third.status).toBe("completed");
+      expect(await countSpawns(fake.spawnsPath)).toBe(3);
+      const args = (await readFile(fake.argsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      const settings = await Promise.all(args.map(async (arg) => {
+        const value = arg[arg.indexOf("--settings") + 1];
+        return JSON.parse(value.startsWith("{") ? value : await readFile(path.resolve(root, value), "utf8"));
+      }));
+      expect(settings[0]).toEqual({ env: { PRESERVED_SETTING: "yes" }, outputStyle: "cdc-guidance:attention-kind" });
+      expect(settings[1].outputStyle).toBe("cdc-guidance:tldr");
+      expect(settings[2]).toEqual({ env: { PRESERVED_SETTING: "yes" } });
+      expect(args[2][args[2].indexOf("--settings") + 1]).toBe(base.settings);
+      expect(args[2]).not.toContain("--plugin-dir");
+      expect(args[2]).toContain("--resume");
+      expect(args[2]).toContain(first.sessionId);
+    } finally { await disposeClaudePersistentSessions(); await rm(root, {recursive:true,force:true}); }
+  });
+
 });

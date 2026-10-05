@@ -1,3 +1,4 @@
+import { guidancePrompt, prepareAgentGuidance } from "./agentGuidanceRuntime.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readlink, rm, stat, symlink, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
@@ -1602,6 +1603,11 @@ function userInputRequestFromServerRequest(
 export async function runCodexAppServerPrompt(
   input: RunCodexAppServerPromptInput,
 ): Promise<RunCodexPromptResult> {
+  if (input.guidance) {
+    const prepared = await prepareAgentGuidance(input.guidance);
+    input = { ...input, prompt: guidancePrompt(prepared, input.prompt) };
+  }
+
   if (input.mode === "review") {
     return {
       status: "failed",

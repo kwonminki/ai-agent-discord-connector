@@ -48,6 +48,8 @@
     "docs/localization.md",
     "docs/agent-relay.ko.md",
     "docs/agent-relay.en.md",
+    "docs/agent-guidance.ko.md",
+    "docs/python-anti-slop-proposal.ko.md",
     "docs/AI_AGENT_GUIDE.md",
     "docs/AI_AGENT_GUIDE.en.md",
     "scripts/start-windows-direct.ps1",
@@ -67,7 +69,8 @@
     "package.json",
     "pnpm-workspace.yaml",
     "tsconfig.json",
-    "tsconfig.base.json"
+    "tsconfig.base.json",
+    "agent-assets"
   ],
   "scripts": {
     "test": "vitest run --passWithNoTests && node --test scripts/release-announcement.test.mjs",

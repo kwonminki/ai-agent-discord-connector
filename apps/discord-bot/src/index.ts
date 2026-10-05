@@ -1,3 +1,4 @@
+import { createAgentGuidanceStore } from "./agentGuidanceStore.js";
 import os from "node:os";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -729,6 +730,7 @@ export async function startBot(): Promise<void> {
           })
       : undefined;
   const processMessage = createDiscordMessageHandler({
+    guidanceStore: createAgentGuidanceStore(".connect/agent-guidance-settings.json"),
     locale,
     resolveChannelContext: controlApiClient.getChannelContext,
     submitCommandJob: controlApiClient.submitCommandJob,

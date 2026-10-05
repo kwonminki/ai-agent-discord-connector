@@ -1,3 +1,4 @@
+import { parseAgentGuidanceCommand, type AgentGuidanceCommand } from "./agentGuidanceCommands.js";
 import {
   authorizeCommand,
   localizeConnectorText,
@@ -29,6 +30,7 @@ export interface HarnessCommandRequest {
 }
 
 export type RoutedDiscordMessage =
+  | { type: "agent-guidance"; request: AgentGuidanceCommand }
   | { type: "execute-command"; command: string; confirmedDangerous: boolean }
   | { type: "codex-chat"; content: string }
   | { type: "codex-continue-session"; sessionId: string; content: string }
@@ -1041,6 +1043,10 @@ function sessionGlobalBlock(content: string): Extract<RoutedDiscordMessage, { ty
 
 export function routeDiscordMessage(input: RouteDiscordMessageInput): RoutedDiscordMessage {
   const trimmedContent = input.content.trim();
+  const guidance = parseAgentGuidanceCommand(trimmedContent);
+  if (guidance) {
+    return authorizationDenied(input) ?? { type: "agent-guidance", request: guidance };
+  }
 
   if (trimmedContent === "help" || trimmedContent === "!help" || trimmedContent === "?") {
     return { type: "bot-help" };

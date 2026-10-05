@@ -1,3 +1,4 @@
+import type { AgentGuidance } from "../../../packages/core/src/agentGuidance.js";
 import type {
   ChannelMode,
   CommandTier,
@@ -32,6 +33,7 @@ export interface RunCodexPromptJobPayload {
   model?: string | null;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | null;
   controlKey?: string;
+  guidance?: AgentGuidance;
   harnessBuilder?: boolean;
   harness?: HarnessWorkerBinding;
 }
@@ -61,6 +63,7 @@ export interface RunClaudePromptJobPayload {
   sessionName?: string | null;
   model?: string | null;
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
+  guidance?: AgentGuidance;
   harnessBuilder?: boolean;
   harness?: HarnessWorkerBinding;
 }

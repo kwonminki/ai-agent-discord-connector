@@ -1,3 +1,4 @@
+import { AGENT_STYLES } from "../../../packages/core/src/agentGuidance.js";
 export const COMPONENT_IDS = {
   answerCopyPrefix: "cdc:answer:copy:",
   syncDefault: "cdc:sync:25",
@@ -150,6 +151,10 @@ function selectedSurveyAnswers(values: string[]): string[] {
 }
 
 export function routeDiscordComponent(customId: string, values: string[] = []): string | null {
+  if (customId === "cdc:guidance:style") {
+    return values.length === 1 && [...AGENT_STYLES.map((style) => style.id), "off", "inherit"].includes(values[0])
+      ? `set_style ${values[0]}` : null;
+  }
   const codexApprovalMatch = customId.match(
     /^cdc:codex:approval:([A-Za-z0-9_-]{1,48}):(accept|accept-session|decline|cancel)$/i,
   );

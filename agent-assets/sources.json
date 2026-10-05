@@ -1,0 +1,67 @@
+[
+  {
+    "repository": "https://github.com/alexgreensh/attention-span",
+    "commit": "2714c965e6be1fa2597510e66651e63bc67cb448",
+    "directory": "vendor/attention-span",
+    "files": [
+      {
+        "path": "skills/attention-kind/SKILL.md",
+        "sha256": "9072839457ec1186ad4f7b09a7979791432f772aef516b9682be55e6b4abb868"
+      },
+      {
+        "path": "skills/rundown/SKILL.md",
+        "sha256": "1b9868923995b2c2469c8184e17eddd85f9232546f17db86c169f5db5231efad"
+      },
+      {
+        "path": "skills/spartan/SKILL.md",
+        "sha256": "a8fe912415ddff7c0e851fb4994e0d4bc068e829c6a0a16d8c89e0b2ae4f123f"
+      },
+      {
+        "path": "skills/tldr/SKILL.md",
+        "sha256": "1b2513bd32a6914e6129e1ebbf5ae5e0eb2e304108b3cac24fb6555bb8159ea2"
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+      }
+    ]
+  },
+  {
+    "repository": "https://github.com/multica-ai/andrej-karpathy-skills",
+    "commit": "2c606141936f1eeef17fa3043a72095b4765b9c2",
+    "directory": "vendor/andrej-karpathy-skills",
+    "files": [
+      {
+        "path": "skills/karpathy-guidelines/SKILL.md",
+        "sha256": "6e22cc54cb02a5e98ae42d06d9d7292db0c1b43894831b32879beb0166b2aea7"
+      },
+      {
+        "path": "CLAUDE.md",
+        "sha256": "694a2d721e41c385f3db492838c23299826df5ba9809e3b0721aac70021e196a"
+      },
+      {
+        "path": "EXAMPLES.md",
+        "sha256": "9bc0ba934077a0514bab0fc7a4ffad37ecd40bfddf57f29d0b8cef5e5b3d1f28"
+      },
+      {
+        "path": "README.md",
+        "sha256": "daf314efb31894b86d68b67786c820bd8470bb2126e578ba9cd0e3e2667883f8"
+      }
+    ]
+  },
+  {
+    "repository": "https://github.com/obra/superpowers",
+    "commit": "8ca22dba9a94f28898bbce59f2537ff4d87c747d",
+    "directory": "vendor/superpowers",
+    "files": [
+      {
+        "path": "skills/verification-before-completion/SKILL.md",
+        "sha256": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3"
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400"
+      }
+    ]
+  }
+]

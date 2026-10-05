@@ -1,3 +1,4 @@
+import { agentGuidanceSchema } from "../../../packages/core/src/agentGuidance.js";
 import { z } from "zod";
 
 const identifierSchema = z.string().trim().regex(/^[a-zA-Z0-9._:-]{1,160}$/);
@@ -35,6 +36,7 @@ export const runCodexPromptInputSchema = z.object({
   model: nullableStringSchema,
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).nullable().optional(),
   controlKey: z.string().optional(),
+  guidance: agentGuidanceSchema.optional(),
   harnessBuilder: z.boolean().optional(),
   harness: harnessWorkerBindingSchema.optional(),
 }).passthrough();
@@ -54,6 +56,7 @@ export const runClaudePromptInputSchema = z.object({
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).nullable().optional(),
   settings: nullableStringSchema,
   persistentSession: z.boolean().nullable().optional(),
+  guidance: agentGuidanceSchema.optional(),
   harnessBuilder: z.boolean().optional(),
   harness: harnessWorkerBindingSchema.optional(),
 }).passthrough();

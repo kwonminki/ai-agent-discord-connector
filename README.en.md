@@ -10,6 +10,10 @@
 
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
+## Agent styles and skills
+
+The default is `attention-kind` plus Karpathy coding guidelines and verification before completion. `/set_style` opens a dropdown; `/set_skill` toggles individual skills; `/pure` disables connector-added guidance; `/skills_reset` restores inheritance/defaults. Claude Code uses native output styles and Codex reads linked files through a generated `AGENTS.md`. Preferences persist across restarts. See the [usage and extension guide (Korean)](docs/agent-guidance.ko.md) and [vendored sources and licenses](agent-assets/README.md).
+
 ## v2.0 Release
 
 > ### NEW · Build Harnesses through conversation

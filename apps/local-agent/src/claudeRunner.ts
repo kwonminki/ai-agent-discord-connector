@@ -1,3 +1,7 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { guidancePrompt, prepareAgentGuidance, type PreparedAgentGuidance } from "./agentGuidanceRuntime.js";
+import type { AgentGuidance } from "../../../packages/core/src/agentGuidance.js";
 import { spawn } from "node:child_process";
 import type { HarnessWorkerBinding } from "../../../packages/core/src/index.js";
 
@@ -22,6 +26,8 @@ export interface RunClaudePromptInput {
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | null;
   settings?: string | null;
   persistentSession?: boolean | null;
+  guidance?: AgentGuidance;
+  preparedGuidance?: PreparedAgentGuidance;
   harnessBuilder?: boolean;
   harness?: HarnessWorkerBinding;
   onProgress?: (event: ClaudeRunnerProgressEvent) => Promise<void> | void;
@@ -145,6 +151,9 @@ function claudeArgs(input: RunClaudePromptInput): string[] {
 
   if (input.harness) {
     args.push("--plugin-dir", input.harness.snapshotPath);
+  }
+  if (input.preparedGuidance?.claudePluginPath) {
+    args.push("--plugin-dir", input.preparedGuidance.claudePluginPath);
   }
 
   if (input.sessionId?.trim()) {
@@ -521,6 +530,7 @@ function persistentSessionSignature(input: RunClaudePromptInput): string {
     input.harnessBuilder === true,
     input.harness?.snapshotDigest ?? "",
     input.harness?.snapshotPath ?? "",
+    input.preparedGuidance?.digest ?? "",
   ]);
 }
 
@@ -1508,6 +1518,29 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
 }
 
 export async function runClaudePrompt(input: RunClaudePromptInput): Promise<RunClaudePromptResult> {
+  if (input.guidance) {
+    const prepared = await prepareAgentGuidance(input.guidance);
+    const settings = resolveClaudeSettings(input);
+    let mergedSettings = settings;
+    if (prepared.claudeStyleName) {
+      const existing = settings
+        ? JSON.parse(settings.trim().startsWith("{")
+          ? settings
+          : await readFile(path.resolve(input.cwd, settings), "utf8"))
+        : {};
+      if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+        throw new Error("Claude settings must be an object");
+      }
+      mergedSettings = JSON.stringify({ ...existing, outputStyle: prepared.claudeStyleName });
+    }
+    input = {
+      ...input,
+      preparedGuidance: prepared,
+      settings: mergedSettings,
+      prompt: guidancePrompt(prepared, input.prompt),
+    };
+  }
+
   if (persistentSessionsEnabled(input)) {
     return runViaPersistentSession(input);
   }
