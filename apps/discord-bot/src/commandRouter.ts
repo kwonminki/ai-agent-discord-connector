@@ -550,7 +550,9 @@ function parseEncodedHarnessCommand(content: string): HarnessCommandRequest | nu
   }
 }
 
-function parseForkSessionCommand(content: string): { name: string } | null {
+export function parseForkSessionCommand(content: string): { name: string } | null {
+  const encoded = parseEncodedForkSessionCommand(content.trim());
+  if (encoded) return encoded;
   const normalized = content.replace(/\s+/g, " ").trim();
   const keyedName = parseKeyedValue(normalized, "name");
 
@@ -1116,7 +1118,7 @@ export function routeDiscordMessage(input: RouteDiscordMessageInput): RoutedDisc
     return { type: "codex-continue-session", ...codexContinueSession };
   }
 
-  const forkSession = parseEncodedForkSessionCommand(trimmedContent) ?? parseForkSessionCommand(trimmedContent);
+  const forkSession = parseForkSessionCommand(trimmedContent);
 
   if (forkSession) {
     const authorization = authorizeCommand({

@@ -3591,6 +3591,78 @@ describe("createDiscordMessageHandler", () => {
     );
   });
 
+  it.each(["/fork Phone", '__cdc_fork_session %7B%22name%22%3A%22Phone%22%7D'])(
+    "forks immediately without answering the source's pending question: %s",
+    async (forkCommand) => {
+      let sourceAnswer: unknown;
+      let forkAnswer: unknown;
+      let cleaningUp = false;
+      const reply = vi.fn().mockResolvedValue({ edit: vi.fn() });
+      const sendTextMessage = vi.fn().mockResolvedValue({ id: "notice" });
+      const guild = { createCategory: vi.fn(), createTextChannel: vi.fn(), sendTextMessage };
+      const question = (threadId: string) => ({
+        threadId, turnId: "turn", itemId: "question", autoResolutionMs: null,
+        questions: [{ id: "choice", header: "Choice", question: "Continue?", isOther: true, isSecret: false, options: null }],
+      });
+      const submitCodexPrompt = vi.fn(async (input) => {
+        const fork = input.payload.forkSession === true;
+        const answer = cleaningUp ? {} : await input.onUserInputRequest?.(question(fork ? "fork-session" : "source-session"));
+        if (fork) forkAnswer = answer;
+        else sourceAnswer = answer;
+        return { jobId: fork ? "fork-job" : "source-job", result: { status: "completed", finalMessage: "Ready", sessionId: fork ? "fork-session" : "source-session" } };
+      });
+      const createForkedSessionThread = vi.fn().mockResolvedValue({
+        discordChannelId: "fork-channel", discordCategoryId: null,
+        channelName: "phone", threadName: "Phone", cwd: "/repo", workspaceRoot: "/repo",
+        workspaceDisplayName: "repo", pendingSession: true, initialPrompt: null,
+        discordDeliveryMode: "thread", channelMode: "session-linked",
+      });
+      const controlCodexTurn = vi.fn();
+      const linkNewCodexSession = vi.fn();
+      const handleMessage = createDiscordMessageHandler({
+        resolveChannelContext: async (channelId) => ({
+          ...sessionChannelContext, codexSessionId: channelId === "fork-channel" ? null : "source-session",
+          discordDeliveryMode: "thread", discordParentChannelId: "parent",
+        }),
+        submitCommandJob: vi.fn(), submitCodexPrompt, controlCodexTurn,
+        createForkedSessionThread, linkNewCodexSession,
+        syncCodexSessions: vi.fn(), updateChannelCwd: vi.fn(), recordCommandAudit: vi.fn(),
+      });
+      const send = (channelId: string, content: string) => handleMessage({
+        authorBot: false, userId: "user", channelId, content, roleIds: ["role-operator"], guild, reply,
+      });
+      const sourceTask = send("source-channel", "Start work");
+      let forkTask: Promise<void> | undefined;
+      try {
+        await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(2));
+        forkTask = send("source-channel", forkCommand);
+        await vi.waitFor(() => expect(createForkedSessionThread).toHaveBeenCalledTimes(1));
+        expect(sourceAnswer).toBeUndefined();
+        await vi.waitFor(() => expect(sendTextMessage).toHaveBeenCalledWith(
+          "fork-channel", expect.objectContaining({ embeds: [expect.objectContaining({ title: expect.stringContaining("Codex 질문") })] }),
+        ));
+        await send("fork-channel", "Fork answer");
+        await forkTask;
+        expect(sourceAnswer).toBeUndefined();
+        expect(forkAnswer).toEqual({ answers: { choice: { answers: ["Fork answer"] } } });
+        await send("source-channel", "Source answer");
+        await sourceTask;
+        expect(sourceAnswer).toEqual({ answers: { choice: { answers: ["Source answer"] } } });
+        expect(controlCodexTurn).not.toHaveBeenCalled();
+        expect(linkNewCodexSession).toHaveBeenCalledWith({ discordChannelId: "fork-channel", codexSessionId: "fork-session", threadName: "Phone" });
+      } finally {
+        // Release either question even when the old implementation misroutes /fork.
+        cleaningUp = true;
+        if (sourceAnswer === undefined) await send("source-channel", "Cleanup");
+        if (forkAnswer === undefined && sendTextMessage.mock.calls.length > 0) {
+          await send("fork-channel", "Cleanup");
+        }
+        void sourceTask.catch(() => undefined);
+        void forkTask?.catch(() => undefined);
+      }
+    },
+  );
+
   it("discards a failed Codex fork instead of linking the source session to two threads", async () => {
     const edits: unknown[] = [];
     const createForkedSessionThread = vi.fn().mockResolvedValue({

@@ -1011,6 +1011,73 @@ describe("runCodexAppServerPrompt", () => {
     }
   });
 
+  it.each(["source-events", "source-id", "missing-id"])(
+    "isolates a fork before its new thread is confirmed: %s",
+    async (scenario) => {
+      const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-fork-isolation-"));
+      const httpServer = createServer();
+      const wsServer = new WebSocketServer({ server: httpServer });
+      const received: string[] = [];
+      const events: unknown[] = [];
+      try {
+        const appServerUrl = await listenOnLoopback(httpServer);
+        wsServer.on("connection", (socket) => {
+          socket.on("message", (raw) => {
+            const message = JSON.parse(String(raw));
+            received.push(message.method);
+            if (message.method === "initialize") {
+              socket.send(JSON.stringify({ id: message.id, result: {} }));
+            } else if (message.method === "thread/fork") {
+              if (scenario === "source-events") {
+                socket.send(JSON.stringify({ method: "item/completed", params: {
+                  threadId: "source", item: { id: "source-answer", type: "agentMessage", text: "Source answer" },
+                } }));
+                socket.send(JSON.stringify({ method: "turn/completed", params: {
+                  threadId: "source", turn: { id: "source-turn", status: "completed" },
+                } }));
+              }
+              setTimeout(() => {
+                if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({
+                  id: message.id,
+                  result: { thread: scenario === "missing-id" ? {} : { id: scenario === "source-id" ? "source" : "fork" } },
+                }));
+              }, 10);
+            } else if (message.method === "thread/name/set") {
+              socket.send(JSON.stringify({ id: message.id, result: {} }));
+            } else if (message.method === "turn/start") {
+              socket.send(JSON.stringify({ id: message.id, result: { turn: { id: "fork-turn" } } }));
+              socket.send(JSON.stringify({ method: "item/completed", params: {
+                threadId: message.params.threadId, item: { id: "fork-answer", type: "agentMessage", text: "Fork answer" },
+              } }));
+              socket.send(JSON.stringify({ method: "turn/completed", params: {
+                threadId: message.params.threadId, turn: { id: "fork-turn", status: "completed" },
+              } }));
+            }
+          });
+        });
+        const result = await runCodexAppServerPrompt({
+          workspaceRoot, cwd: workspaceRoot, prompt: "Prepare fork", timeoutMs: 2_000,
+          sessionId: "source", forkSession: true, sessionName: "Phone", appServerUrl,
+          onProgress: (event) => { events.push(event); },
+        });
+        expect(received).not.toContain("thread/resume");
+        if (scenario === "source-events") {
+          expect(result).toMatchObject({ status: "completed", sessionId: "fork", finalMessage: "Fork answer" });
+          expect(events).not.toContainEqual({ type: "agent-message", text: "Source answer" });
+        } else {
+          expect(result).toMatchObject({ status: "failed", sessionId: null });
+          expect(received).not.toContain("thread/name/set");
+          expect(received).not.toContain("turn/start");
+          expect(events).toEqual([]);
+        }
+      } finally {
+        wsServer.close();
+        await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+        await rm(workspaceRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("answers app-server command approval requests", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codex-app-server-runner-"));
     const httpServer = createServer();

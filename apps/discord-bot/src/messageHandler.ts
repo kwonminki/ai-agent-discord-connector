@@ -40,7 +40,7 @@ import { createAgentSettingsController } from "./agentSettingsController.js";
 import { buildAgentRelayCallbackMessages, collectAgentResultFiles } from "./agentRelayBridge.js";
 import type { ActiveRelayPresence } from "./agentRelayPresence.js";
 import type { ScheduleCommandRequest, ScheduleCommandResult } from "./scheduler.js";
-import { routeDiscordMessage } from "./commandRouter.js";
+import { parseForkSessionCommand, routeDiscordMessage } from "./commandRouter.js";
 import type { HarnessCommandRequest } from "./commandRouter.js";
 import {
   formatHarnessBuildStatus,
@@ -935,6 +935,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
   }
 
   const channelQueues = new Map<string, ChannelQueue>();
+  const activeForkMessages = new Set<DiscordMessageLike>();
   const codexSessionIdsByChannel = new Map<string, string>();
   const claudeSessionIdsByChannel = new Map<string, string>();
   const agentSettingsController = createAgentSettingsController({
@@ -972,7 +973,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
   let nextCodexUserInputToken = 1;
 
   function executionState(excludeActiveMessage?: DiscordMessageLike): BotReloadExecutionState {
-    let activeCount = 0;
+    let activeCount = activeForkMessages.size - (excludeActiveMessage && activeForkMessages.has(excludeActiveMessage) ? 1 : 0);
     let pendingCount = 0;
 
     for (const queue of channelQueues.values()) {
@@ -3444,6 +3445,14 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           sourceSessionId,
           name: routed.name,
         });
+        const forkChannelId = forkThread.discordChannelId;
+        const forkReply: DiscordMessageLike["reply"] = async (payload) => {
+          if (!message.guild?.sendTextMessage) {
+            throw new Error("Cannot deliver a question to the fork thread.");
+          }
+          await message.guild.sendTextMessage(forkChannelId, payload);
+        };
+        const forkReplyWithRoleMentions = createReplyWithOptionalRoleMentions(forkReply, channelContext.allowedRoleIds);
 
         await input.guidanceStore?.copy(
           { channelId: message.channelId, parentId: channelContext.discordParentChannelId },
@@ -3622,8 +3631,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               }
               await publishForkHarnessProgress(event);
             },
-            onApprovalRequest: (request) => requestCodexApproval(replyWithRoleMentions, message.channelId, request),
-            onUserInputRequest: (request) => requestCodexUserInput(reply, replyWithRoleMentions, message.channelId, request),
+            onApprovalRequest: (request) => requestCodexApproval(forkReplyWithRoleMentions, forkChannelId, request),
+            onUserInputRequest: (request) => requestCodexUserInput(forkReply, forkReplyWithRoleMentions, forkChannelId, request),
           });
 
           const failureMessage = forkResponseErrorMessage(response, "Codex");
@@ -4694,6 +4703,19 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       return;
     }
 
+    // Forks run in a new worker queue. Waiting on the source can deadlock when
+    // it is awaiting an answer that the user wants to give in the fork instead.
+    if (parseForkSessionCommand(message.content)) {
+      activeForkMessages.add(message);
+      try {
+        await processDiscordMessage(message);
+      } finally {
+        activeForkMessages.delete(message);
+        await restartAfterQueueDrain();
+      }
+      return;
+    }
+
     let queue = channelQueues.get(message.channelId);
     let queuedMessage = message;
 
@@ -4858,7 +4880,8 @@ function isExplicitQueuePrompt(content: string): boolean {
 
 function isCodexUserInputReply(content: string): boolean {
   const trimmed = content.trim();
-  return trimmed.length > 0 && !trimmed.startsWith("/") && !isImmediateQueueControl(trimmed);
+  return trimmed.length > 0 && !trimmed.startsWith("/") &&
+    !parseForkSessionCommand(trimmed) && !isImmediateQueueControl(trimmed);
 }
 
 function isDurableAgentRequest(type: string): boolean {

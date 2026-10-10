@@ -1735,7 +1735,8 @@ async function runPromptAgainstAppServer(input: {
 }): Promise<RunCodexPromptResult> {
   const socket = new WebSocket(input.serverUrl, { perMessageDeflate: false });
   let nextRequestId = 1;
-  let sessionId = input.input.sessionId ?? null;
+  // Do not accept source notifications or publish its ID while creating a fork.
+  let sessionId = input.input.forkSession ? null : input.input.sessionId ?? null;
   let autoCompactAnnounced = false;
   let completed = false;
   let turnFinished = false;
@@ -2173,6 +2174,10 @@ async function runPromptAgainstAppServer(input: {
                   });
           const openedThreadId = threadIdFromResponse(threadResult);
 
+          if (input.input.forkSession && (!openedThreadId || openedThreadId.toLowerCase() === input.input.sessionId?.toLowerCase())) {
+            throw new Error("Codex app-server thread/fork did not return a distinct forked thread ID.");
+          }
+
           if (openedThreadId) {
             await emitThreadStarted(openedThreadId);
 
@@ -2183,8 +2188,6 @@ async function runPromptAgainstAppServer(input: {
                 name: requestedSessionName,
               });
             }
-          } else if (input.input.sessionId && input.input.forkSession) {
-            throw new Error("Codex app-server thread/fork did not return a forked thread ID.");
           }
 
           const harness = input.input.harness;
