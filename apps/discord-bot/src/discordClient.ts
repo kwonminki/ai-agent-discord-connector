@@ -328,11 +328,27 @@ export function createDiscordGuildSurface(
     async threadOperatorIds(id, roleIds) {
       const thread = await guild.channels.fetch(id);
       if (!thread?.isThread()) return [];
-      const members = await thread.members.fetch();
+      const candidates = new Set<string>();
+      try {
+        const members = await thread.members.fetch();
+        for (const member of members.values()) candidates.add(member.id);
+      } catch (error) {
+        // Listing all members can require the privileged Guild Members intent.
+        // Reading this thread's own authors does not need that extra permission.
+        if (![50001, 50013].includes((error as { code?: number }).code ?? 0)) throw error;
+        try {
+          const messages = await thread.messages.fetch({ limit: 100 });
+          for (const message of messages.values()) if (!message.author.bot) candidates.add(message.author.id);
+        } catch (error) {
+          if (![50001, 50013].includes((error as { code?: number }).code ?? 0)) throw error;
+        }
+      }
       const users: string[] = [];
-      for (const member of members.values()) {
-        const user = await guild.members.fetch(member.id);
-        if (!user.user.bot && (!roleIds.length || roleIds.some(role => user.roles.cache.has(role)))) users.push(member.id);
+      for (const id of candidates) {
+        try {
+          const user = await guild.members.fetch(id);
+          if (!user.user.bot && (!roleIds.length || roleIds.some(role => user.roles.cache.has(role)))) users.push(id);
+        } catch (error) { if ((error as { code?: number }).code !== 10007) throw error; }
       }
       return users;
     },

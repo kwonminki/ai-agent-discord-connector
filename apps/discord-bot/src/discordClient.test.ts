@@ -19,6 +19,19 @@ import {
   withRoleMentions,
 } from "./responses.js";
 
+describe("subagent index participants", () => {
+  it("falls back to parent message authors when Discord denies the members intent", async () => {
+    const thread = { isThread: () => true, members: { fetch: vi.fn().mockRejectedValue({ code: 50001 }) },
+      messages: { fetch: vi.fn().mockResolvedValue(new Map([
+        ["a", { author: { id: "operator", bot: false } }], ["b", { author: { id: "other", bot: false } }], ["c", { author: { id: "bot", bot: true } }],
+      ])) } };
+    const guild = { channels: { fetch: vi.fn().mockResolvedValue(thread) }, members: { fetch: vi.fn(async (id: string) => ({ user: { bot: false }, roles: { cache: new Map(id === "operator" ? [["role", {}]] : []) } })) } };
+    const surface = createDiscordGuildSurface(guild as never)!;
+    expect(await surface.threadOperatorIds!("parent", ["role"])).toEqual(["operator"]);
+    expect(thread.messages.fetch).toHaveBeenCalledWith({ limit: 100 });
+  });
+});
+
 describe("attachDiscordMessageHandler", () => {
   it("ignores Discord system messages such as channel renames", async () => {
     const handlers = new Map<string, (message: unknown) => void>();
