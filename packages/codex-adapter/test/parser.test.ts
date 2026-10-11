@@ -451,7 +451,8 @@ describe("codex parser", () => {
       includeExecSessions: true,
       includeRealtimeEvents: true,
     });
-    expect(afterEmptyCompletion[0]?.realtimeEvents).toHaveLength(2);
+    expect(afterEmptyCompletion[0]?.realtimeEvents).toHaveLength(3);
+    expect(afterEmptyCompletion[0]?.realtimeEvents?.at(-1)).toMatchObject({ text: "작업 종료", turnStatus: "completed" });
 
     await fs.rm(codexHome, { recursive: true, force: true });
   });

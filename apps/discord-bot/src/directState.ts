@@ -48,6 +48,12 @@ export interface SyncedSessionChannelState {
   lastTranscriptMessageKey?: string | null;
   lastTranscriptSyncedAt?: string | null;
   lastTranscriptDiscordMessageId?: string | null;
+  transcriptProgress?: {
+    sessionId: string;
+    eventKey: string;
+    status: "running" | "completed" | "interrupted" | "stale";
+    messageId?: string;
+  };
 }
 
 export type ScheduledCommandSpec =

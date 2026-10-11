@@ -489,6 +489,7 @@ export async function startBot(): Promise<void> {
             discordChannelId: input.discordChannelId,
             postUpdates: input.postUpdates,
             ignoredSessionIds: activelyStreamedSessionIds,
+            locale,
           });
         }
       : undefined;
@@ -517,6 +518,7 @@ export async function startBot(): Promise<void> {
             sessions,
             mentionRoleIds: connectConfig.discord.allowedRoleIds,
             ignoredSessionIds: activelyStreamedSessionIds,
+            locale,
           });
       }
       : undefined;
@@ -954,7 +956,9 @@ export async function startBot(): Promise<void> {
           recordBackgroundPollResult(pollState, {
             now: Date.now(),
             baseIntervalMs: TRANSCRIPT_SYNC_INTERVAL_MS,
-            maxIntervalMs: BACKGROUND_POLL_MAX_INTERVAL_MS,
+            // Public progress should appear even for a short turn after an
+            // idle period. Keep load/error backoff, not idle backoff, here.
+            maxIntervalMs: TRANSCRIPT_SYNC_INTERVAL_MS,
             changed: result.updatedChannels > 0 || result.postedMessages > 0,
           });
         })()

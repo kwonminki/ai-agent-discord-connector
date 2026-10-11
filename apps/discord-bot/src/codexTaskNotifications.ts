@@ -4,6 +4,8 @@ import type {
 } from "../../../packages/codex-adapter/src/index.js";
 import type { ControlApiClient } from "./controlApiClient.js";
 import { prepareAgentCompletionAnswer } from "./agentCompletionAnswer.js";
+import { syncCodexSessionTranscriptUpdates } from "./codexTranscriptSync.js";
+import type { ConnectorLocale } from "../../../packages/core/src/index.js";
 import {
   codexSessionDiscordThreadName,
   sessionTopic,
@@ -34,7 +36,7 @@ const ANSWER_EMBED_COLOR = 0x2ecc71;
 const TASK_COMPLETION_NOTIFICATION_SCOPE = "all-nonarchived";
 
 export interface NotifyCodexTaskCompletionsInput {
-  guild: Pick<DiscordGuildSurface, "sendTextMessage" | "createThread">;
+  guild: Pick<DiscordGuildSurface, "sendTextMessage" | "editTextMessage" | "createThread">;
   controlApi?: Pick<ControlApiClient, "createManagedChannel" | "linkCodexSession">;
   stateStore: DirectSyncStateStore;
   adminChannelId: string;
@@ -43,6 +45,7 @@ export interface NotifyCodexTaskCompletionsInput {
   sessions: DiscoveredCodexSession[];
   mentionRoleIds?: string[];
   ignoredSessionIds?: Iterable<string>;
+  locale?: ConnectorLocale;
 }
 
 export interface NotifyCodexTaskCompletionsResult {
@@ -329,6 +332,12 @@ async function ensureSessionThread(input: {
 export async function notifyCodexTaskCompletions(
   input: NotifyCodexTaskCompletionsInput,
 ): Promise<NotifyCodexTaskCompletionsResult> {
+  // The completion poll can run before the transcript poll. Flush public
+  // updates and finish the status card before posting the final answer.
+  await syncCodexSessionTranscriptUpdates({
+    guild: input.guild, stateStore: input.stateStore, sessions: input.sessions,
+    trigger: "realtime", ignoredSessionIds: input.ignoredSessionIds, locale: input.locale,
+  });
   const state = await input.stateStore.read();
   const notificationsBySession = new Map(
     state.taskCompletionNotifications.map((notification) => [

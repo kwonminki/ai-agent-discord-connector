@@ -444,3 +444,53 @@ describe("syncCodexSessionTranscriptUpdates", () => {
     }
   });
 });
+
+it.each([10003, 503])("preserves delivered transcript progress when a later channel fails (%s)", async (code) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "transcript-failure-"));
+  const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+  const base = syncedSessionState();
+  const channels = [1, 2, 3].map((i) => ({ ...base.sessionChannels[0], codexSessionId: `session-${i}`, discordChannelId: `channel-${i}`, lastTranscriptMessageKey: "old" }));
+  const sessions = channels.map((c) => ({ id: c.codexSessionId, threadName: "test", updatedAt: "2026-09-23T00:00:00Z", cwdHint: "/repo", realtimeEvents: [
+    { key: "old", kind: "user" as const, text: "old" },
+    { key: "new", kind: "assistant" as const, phase: "commentary" as const, text: "new" },
+  ] }));
+  const sendTextMessage = vi.fn(async (id: string) => {
+    if (id === "channel-2") throw Object.assign(new Error("destination failed"), { code });
+  });
+  const input = { guild: { sendTextMessage }, stateStore, sessions, trigger: "realtime" as const };
+  try {
+    await stateStore.write({ ...base, sessionChannels: channels });
+    if (code === 10003) await syncCodexSessionTranscriptUpdates(input);
+    else await expect(syncCodexSessionTranscriptUpdates(input)).rejects.toThrow("destination failed");
+    expect((await stateStore.read()).sessionChannels[0].lastTranscriptMessageKey).toBe("new");
+    sendTextMessage.mockClear();
+    if (code === 10003) {
+      await syncCodexSessionTranscriptUpdates(input);
+      expect(sendTextMessage).not.toHaveBeenCalled();
+      expect((await stateStore.read()).sessionChannels[2].lastTranscriptMessageKey).toBe("new");
+    } else {
+      await expect(syncCodexSessionTranscriptUpdates(input)).rejects.toThrow();
+      expect(sendTextMessage.mock.calls.map(([id]) => id)).toEqual(["channel-2"]);
+    }
+  } finally { await rm(tempRoot, { recursive: true, force: true }); }
+});
+
+it("retries only unsent transcript messages after a partial channel delivery", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "transcript-partial-"));
+  const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+  const base = syncedSessionState();
+  const sendTextMessage = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("network")).mockResolvedValue(undefined);
+  const input = { guild: { sendTextMessage }, stateStore, trigger: "realtime" as const, sessions: [{ id: "session-1", threadName: "test", updatedAt: "now", cwdHint: "/repo", realtimeEvents: [
+    { key: "old", kind: "user" as const, text: "old" },
+    { key: "one", kind: "assistant" as const, phase: "commentary" as const, text: "one" },
+    { key: "two", kind: "assistant" as const, phase: "commentary" as const, text: "two" },
+  ] }] };
+  try {
+    await stateStore.write({ ...base, sessionChannels: [{ ...base.sessionChannels[0], lastTranscriptMessageKey: "old" }] });
+    await expect(syncCodexSessionTranscriptUpdates(input)).rejects.toThrow("network");
+    sendTextMessage.mockClear();
+    await syncCodexSessionTranscriptUpdates(input);
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(sendTextMessage).toHaveBeenCalledWith("channel-1", "two");
+  } finally { await rm(tempRoot, { recursive: true, force: true }); }
+});

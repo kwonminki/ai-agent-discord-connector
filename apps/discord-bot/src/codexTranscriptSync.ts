@@ -1,4 +1,7 @@
+import { isUnknownDiscordChannelError } from "./discordErrors.js";
 import { createHash } from "node:crypto";
+import { splitDiscordMessageContent, type ConnectorLocale } from "../../../packages/core/src/index.js";
+import { syncCodexTranscriptProgress } from "./codexTranscriptProgress.js";
 import type {
   CodexSessionContextMessage,
   CodexSessionRealtimeEvent,
@@ -14,13 +17,15 @@ import type {
 const MAX_DISCORD_TEXT_LENGTH = 1_900;
 
 export interface SyncCodexSessionTranscriptUpdatesInput {
-  guild: Pick<DiscordGuildSurface, "sendTextMessage">;
+  guild: Pick<DiscordGuildSurface, "sendTextMessage" | "editTextMessage">;
   stateStore: DirectSyncStateStore;
   sessions: DiscoveredCodexSession[];
   trigger: "on-chat" | "realtime";
   discordChannelId?: string;
   postUpdates?: boolean;
   ignoredSessionIds?: Iterable<string>;
+  locale?: ConnectorLocale;
+  now?: () => number;
 }
 
 export interface SyncCodexSessionTranscriptUpdatesResult {
@@ -115,7 +120,7 @@ function formatTranscriptUpdateMessage(input: {
   }
 
   if (input.message.role === "assistant") {
-    return truncateDiscordText(text);
+    return text;
   }
 
   return truncateDiscordText(text);
@@ -130,11 +135,10 @@ async function postTranscriptDiscordMessage(input: {
   guild: Pick<DiscordGuildSurface, "sendTextMessage">;
   channel: SyncedSessionChannelState;
   message: TranscriptMessage;
-}): Promise<void> {
-  await input.guild.sendTextMessage?.(
-    input.channel.discordChannelId,
-    formatTranscriptUpdateMessage({ message: input.message }),
-  );
+}): Promise<number> {
+  const chunks = splitDiscordMessageContent(formatTranscriptUpdateMessage({ message: input.message }), MAX_DISCORD_TEXT_LENGTH);
+  for (const chunk of chunks) await input.guild.sendTextMessage?.(input.channel.discordChannelId, chunk);
+  return chunks.length;
 }
 
 function nextChannelState(
@@ -152,7 +156,16 @@ function nextChannelState(
   };
 }
 
-export async function syncCodexSessionTranscriptUpdates(
+const pendingSyncs = new WeakMap<DirectSyncStateStore, Promise<unknown>>();
+export function syncCodexSessionTranscriptUpdates(input: SyncCodexSessionTranscriptUpdatesInput): Promise<SyncCodexSessionTranscriptUpdatesResult> {
+  // On-chat and background sync share a cursor. Serialize them to avoid
+  // publishing the same public update twice.
+  const next = (pendingSyncs.get(input.stateStore) ?? Promise.resolve()).then(() => syncTranscriptUpdates(input));
+  pendingSyncs.set(input.stateStore, next.catch(() => undefined));
+  return next;
+}
+
+async function syncTranscriptUpdates(
   input: SyncCodexSessionTranscriptUpdatesInput,
 ): Promise<SyncCodexSessionTranscriptUpdatesResult> {
   const state = await input.stateStore.read();
@@ -174,8 +187,34 @@ export async function syncCodexSessionTranscriptUpdates(
   let checkedChannels = 0;
   let updatedChannels = 0;
   let postedMessages = 0;
-  let changed = false;
   const changedChannels = new Map<string, SyncedSessionChannelState>();
+
+  const persistChanges = async () => {
+    await input.stateStore.update((latestState) => ({
+      ...latestState,
+      sessionChannels: latestState.sessionChannels.map((channel) => {
+        const changedChannel = changedChannels.get(channel.discordChannelId);
+
+        if (
+          !changedChannel ||
+          changedChannel.codexSessionId?.toLowerCase() !== channel.codexSessionId?.toLowerCase()
+        ) {
+          return channel;
+        }
+
+        return {
+          ...channel,
+          threadName: changedChannel.threadName,
+          updatedAt: changedChannel.updatedAt,
+          cwd: changedChannel.cwd,
+          lastTranscriptMessageKey: changedChannel.lastTranscriptMessageKey,
+          lastTranscriptSyncedAt: changedChannel.lastTranscriptSyncedAt,
+          transcriptProgress: changedChannel.transcriptProgress,
+        };
+      }),
+    }));
+    changedChannels.clear();
+  };
 
   const sessionChannels = [...state.sessionChannels];
 
@@ -205,7 +244,7 @@ export async function syncCodexSessionTranscriptUpdates(
 
     checkedChannels += 1;
 
-    if (channel.lastTranscriptMessageKey === latestMessage.key) {
+    if (channel.lastTranscriptMessageKey === latestMessage.key && !channel.transcriptProgress) {
       continue;
     }
 
@@ -218,48 +257,43 @@ export async function syncCodexSessionTranscriptUpdates(
         : []
       : [];
 
+    let progress = channel.transcriptProgress;
     if (
-      newMessages.length > 0 &&
       input.guild.sendTextMessage &&
       input.postUpdates !== false &&
       !ignoredSessionIds.has(session.id)
     ) {
-      for (const message of newMessages.filter(shouldMirrorTranscriptMessage)) {
-        await postTranscriptDiscordMessage({ guild: input.guild, channel, message });
-        postedMessages += 1;
+      try {
+        const result = await syncCodexTranscriptProgress({
+          guild: input.guild, channel, session,
+          newEventKeys: new Set(newMessages.map(message => message.key)),
+          locale: input.locale, now: input.now?.() ?? Date.now(),
+        });
+        progress = result.progress;
+        postedMessages += result.posted;
+        if (progress !== channel.transcriptProgress) {
+          changedChannels.set(channel.discordChannelId, { ...channel, transcriptProgress: progress });
+          await persistChanges();
+        }
+        for (const message of newMessages.filter(shouldMirrorTranscriptMessage)) {
+          postedMessages += await postTranscriptDiscordMessage({ guild: input.guild, channel, message });
+          changedChannels.set(channel.discordChannelId, { ...nextChannelState(channel, session, message.key), transcriptProgress: progress });
+          await persistChanges();
+        }
+      } catch (error) {
+        if (!isUnknownDiscordChannelError(error)) throw error;
+        // A deleted destination must not block other channels or replay history.
+        progress = undefined;
       }
     }
 
-    sessionChannels[index] = nextChannelState(channel, session, latestMessage.key);
+    if (channel.lastTranscriptMessageKey === latestMessage.key && progress === channel.transcriptProgress) continue;
+    sessionChannels[index] = { ...nextChannelState(channel, session, latestMessage.key), transcriptProgress: progress };
     changedChannels.set(channel.discordChannelId, sessionChannels[index]);
     updatedChannels += 1;
-    changed = true;
+    await persistChanges();
   }
 
-  if (changed) {
-    await input.stateStore.update((latestState) => ({
-      ...latestState,
-      sessionChannels: latestState.sessionChannels.map((channel) => {
-        const changedChannel = changedChannels.get(channel.discordChannelId);
-
-        if (
-          !changedChannel ||
-          changedChannel.codexSessionId?.toLowerCase() !== channel.codexSessionId?.toLowerCase()
-        ) {
-          return channel;
-        }
-
-        return {
-          ...channel,
-          threadName: changedChannel.threadName,
-          updatedAt: changedChannel.updatedAt,
-          cwd: changedChannel.cwd,
-          lastTranscriptMessageKey: changedChannel.lastTranscriptMessageKey,
-          lastTranscriptSyncedAt: changedChannel.lastTranscriptSyncedAt,
-        };
-      }),
-    }));
-  }
 
   return {
     mode,

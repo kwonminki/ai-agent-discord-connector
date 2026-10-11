@@ -59,6 +59,7 @@ export interface CodexSessionRealtimeEvent {
   text: string;
   phase?: "commentary" | "final_answer";
   timestamp?: string;
+  turnStatus?: "running" | "completed" | "interrupted";
 }
 
 interface CodexThreadState {
@@ -1057,6 +1058,7 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
       key: hashSessionEventLine(line),
       kind: "status",
       text: "작업 시작",
+      turnStatus: "running",
       ...(timestamp ? { timestamp } : {}),
     };
   }
@@ -1067,14 +1069,27 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
       (typeof parsed.payload.last_agent_message !== "string" ||
         parsed.payload.last_agent_message.trim().length === 0)
     ) {
-      return null;
+      // Empty completions still end the progress indicator, but must not
+      // trigger a completion notification using an older assistant answer.
+      return {
+        key: hashSessionEventLine(line), kind: "status", text: "작업 종료",
+        turnStatus: "completed", ...(timestamp ? { timestamp } : {}),
+      };
     }
 
     return {
       key: hashSessionEventLine(line),
       kind: "status",
       text: "작업 완료",
+      turnStatus: "completed",
       ...(timestamp ? { timestamp } : {}),
+    };
+  }
+
+  if (parsed.type === "event_msg" && parsed.payload.type === "turn_aborted") {
+    return {
+      key: hashSessionEventLine(line), kind: "status", text: "작업 중단",
+      turnStatus: "interrupted", ...(timestamp ? { timestamp } : {}),
     };
   }
 
