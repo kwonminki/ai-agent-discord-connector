@@ -19,7 +19,7 @@ const terminalSchema = z.object({
 export type OrcaTerminal = z.infer<typeof terminalSchema>;
 export type OrcaTarget = OrcaTerminal & { runtimeId: string; processKey?: string };
 export interface OrcaClient {
-  subagents?(): Promise<OrcaSubagentLink[]>;
+  subagents?(sessionIds?: string[]): Promise<OrcaSubagentLink[]>;
   list(): Promise<{ terminals: OrcaTarget[]; truncated: boolean }>;
   show(handle: string): Promise<OrcaTarget>;
   screen(target: OrcaTarget, beforeInput?: boolean): Promise<string>;
@@ -60,6 +60,7 @@ export function createOrcaClient(
 ): OrcaClient {
   let guide: Promise<void> | undefined;
   let orchestrationGuide: Promise<unknown> | undefined;
+  const observedSessionIds = new Set<string>();
   let linksCache: { at: number; links: OrcaSubagentLink[] } | undefined;
   async function invoke(args: string[]) {
     try {
@@ -84,8 +85,11 @@ export function createOrcaClient(
     return envelopeSchema.parse(await invoke(args));
   }
   return {
-    async subagents() {
-      if (linksCache && Date.now() - linksCache.at < 30_000) return linksCache.links;
+    async subagents(sessionIds = []) {
+      const hasNewSession = sessionIds.some(id => !observedSessionIds.has(id));
+      for (const id of sessionIds) observedSessionIds.add(id);
+      // A new worker must not get a flat completion thread during the cache TTL.
+      if (!hasNewSession && linksCache && Date.now() - linksCache.at < 30_000) return linksCache.links;
       const owners = await listOwners();
       if (!owners.length) { linksCache = { at: Date.now(), links: [] }; return []; }
       orchestrationGuide ??= invoke(["skills", "get", "orchestration"]).then(value => {

@@ -384,7 +384,7 @@ export async function startBot(): Promise<void> {
           const relations = new Map(state?.sessionChannels.filter(channel => channel.codexSessionId && channel.subagent)
             .map(channel => [channel.codexSessionId!, channel.subagent!]));
           if (orcaClient?.subagents && Date.now() >= orcaDiscoveryRetryAt) {
-            try { for (const link of await orcaClient.subagents()) relations.set(link.sessionId, link.subagent); }
+            try { for (const link of await orcaClient.subagents(sessions.map(session => session.id))) relations.set(link.sessionId, link.subagent); }
             catch { orcaDiscoveryRetryAt = Date.now() + 60_000; console.warn("Orca subagent discovery unavailable; retaining proven relationships."); }
           }
           return sessions.map(session => {

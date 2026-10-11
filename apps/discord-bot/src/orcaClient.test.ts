@@ -10,6 +10,17 @@ function runner(response: unknown) {
 }
 
 describe("Orca CLI adapter", () => {
+  it("invalidates subagent discovery immediately when a new session appears", async () => {
+    const owners = vi.fn().mockResolvedValue([]);
+    const run = runner({});
+    const client = createOrcaClient("orca", run, async () => null, owners);
+    await client.subagents!(["root"]);
+    await client.subagents!(["root"]);
+    expect(owners).toHaveBeenCalledTimes(1);
+    await client.subagents!(["root", "new-worker"]);
+    expect(owners).toHaveBeenCalledTimes(2);
+    expect(run).not.toHaveBeenCalled();
+  });
   it("resolves only the terminal of the exact running session without listing or choosing", async () => {
     const owner = { sessionId: "session", terminalHandle: target.handle, processKey: "123:456" };
     const find = vi.fn(async () => owner);

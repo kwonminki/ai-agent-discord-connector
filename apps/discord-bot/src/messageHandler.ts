@@ -4670,7 +4670,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         return;
       }
       const forwarded: DiscordMessageLike = { ...incomingMessage, channelId: parentChannelId,
-        content: `The user sent a message to your existing subagent ${subagentContext.codexSessionId}. Forward the message below to that exact existing subagent using your subagent messaging capability. Do not create a new agent or fork. If it is closed or unavailable, explain that.
+        content: `The user sent a message to your existing subagent ${subagentContext.codexSessionId}${subagentContext.subagent.agentPath ? ` (agent path: ${subagentContext.subagent.agentPath})` : ""}. Forward the message below to that exact existing subagent using your subagent messaging capability. Do not create a new agent or fork. If it is closed or unavailable, explain that.
 
 User message:
 ${incomingMessage.content}`,
