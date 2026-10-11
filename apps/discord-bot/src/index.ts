@@ -1,4 +1,6 @@
 import { createAgentGuidanceStore } from "./agentGuidanceStore.js";
+import { createDesktopSessionBridge } from "./desktopSessionBridge.js";
+import { createDesktopSessionClient } from "./desktopSessionClient.js";
 import os from "node:os";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -732,6 +734,12 @@ export async function startBot(): Promise<void> {
           })
       : undefined;
   const processMessage = createDiscordMessageHandler({
+    desktopBridge: connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_DESKTOP_INPUT_ENABLED, true)
+      ? createDesktopSessionBridge({
+          client: createDesktopSessionClient({ codexHome: connectConfig.direct.codexHome }),
+          file: ".connect/desktop-deliveries.json",
+          locale,
+        }) : undefined,
     orcaBridge: createOrcaBridge({
       client: connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_ORCA_ENABLED, connectConfig.direct.orca?.enabled ?? true)
         ? createOrcaClient(process.env.CONNECT_ORCA_COMMAND?.trim() || connectConfig.direct.orca?.command?.trim() || undefined) : undefined,

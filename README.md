@@ -10,6 +10,10 @@
 
 Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI agent를 Discord 스레드로 사용하고, 서로 대화시킬 수 있는 개인용 브리지**입니다.
 
+## 앱에서 시작한 작업에 Discord로 답변
+
+ChatGPT/Codex 앱의 작업도 **같은 Discord 스레드에 그냥 답변하면** 원래 대화로 전달됩니다. 포크 없이 중간 입력이나 다음 대화를 이어갑니다. 앱과 Gateway가 같은 사용자·컴퓨터에서 실행 중이어야 합니다. [적용 조건·복구 안내](docs/desktop-input.ko.md)
+
 ## Orca CLI 작업에 Discord로 답변
 
 Orca에서 Codex로 작업 중이면 **같은 세션의 Discord 스레드에 그냥 답변하면 됩니다.** macOS/Linux에서 실행 중인 세션을 자동으로 찾습니다. `/orca`로 연결을 확인하고 **화면 확인**으로 질문을 읽을 수 있습니다. Claude 및 수동 연결은 `/orca action:list`를 사용합니다. Direct 모드와 실행 가능한 Orca CLI가 필요합니다. [설정·사용법·복구 안내](docs/orca.ko.md)

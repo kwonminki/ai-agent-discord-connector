@@ -348,6 +348,7 @@ export interface CreateDiscordMessageHandlerInput {
   harnessStore?: HarnessStore;
   guidanceStore?: AgentGuidanceStore;
   orcaBridge?: OrcaBridge;
+  desktopBridge?: OrcaBridge;
 }
 
 export interface DiscordMessageHandler {
@@ -4663,26 +4664,28 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       }
     }
 
-    // Orca owns its existing CLI writer. Route before prompt queues, steering,
+    // Existing CLI/Desktop owners receive input before prompt queues, steering,
     // pending app-server questions, and local attachment materialization.
-    if (input.orcaBridge || parseOrcaCommand(incomingMessage.content)) {
+    if (input.orcaBridge || input.desktopBridge || parseOrcaCommand(incomingMessage.content)) {
       const context = await input.resolveChannelContext(incomingMessage.channelId);
       if (context) {
-        if (!input.orcaBridge) {
+        if (!input.orcaBridge && parseOrcaCommand(incomingMessage.content)) {
           await incomingMessage.reply("Orca requires a Direct-mode gateway with Orca integration enabled.");
           return;
         }
         activeOrcaMessages.add(incomingMessage);
         let handled: boolean;
         try {
-          handled = await input.orcaBridge.handle(incomingMessage, context, () => {
+          const busy = () => {
             const queue = channelQueues.get(incomingMessage.channelId);
             const action = parseOrcaCommand(incomingMessage.content)?.action;
             const bindingChange = action === "connect" || action === "select" || action === "auto";
             return Boolean(deferredRestartRequested || restartScheduled || queue?.activeMessage || queue?.pending.length ||
               (bindingChange && [...incomingMessages].some((message) => message !== incomingMessage && message.channelId === incomingMessage.channelId)) ||
               [...activeForkMessages].some((message) => message.channelId === incomingMessage.channelId));
-          });
+          };
+          handled = await input.orcaBridge?.handle(incomingMessage, context, busy) ?? false;
+          if (!handled) handled = await input.desktopBridge?.handle(incomingMessage, context, busy) ?? false;
           if (handled) await completeDurableMessage(incomingMessage);
         } finally {
           activeOrcaMessages.delete(incomingMessage);

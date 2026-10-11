@@ -10,6 +10,10 @@
 
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
+## Reply to Desktop work from Discord
+
+**Reply in the same synced Discord thread** to continue Codex work in the ChatGPT/Codex app. Input steers an active turn or starts the next turn in that conversation, without forking. The app and gateway must run as the same user on the same computer. [Requirements and recovery](docs/desktop-input.en.md)
+
 ## Reply to Orca CLI work from Discord
 
 With Codex running in Orca, **reply in its synced Discord thread**. The gateway automatically finds the matching CLI session on macOS/Linux. `/orca` checks the connection and **Read screen** shows the question. Use `/orca action:list` for Claude or manual binding. Requires Direct mode and a reachable Orca CLI. [Setup, usage, and recovery](docs/orca.en.md)
