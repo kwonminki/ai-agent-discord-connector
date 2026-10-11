@@ -12,7 +12,7 @@ Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI 
 
 ## Orca CLI 작업에 Discord로 답변
 
-`/orca`에서 실행 중인 Codex / Claude 터미널을 선택하면 이 채널의 일반 메시지가 그 터미널로 전달됩니다. **화면 확인**으로 질문을 읽고, `/orca action:disconnect`로 원래 봇 동작으로 돌아옵니다. Direct 모드와 실행 가능한 Orca CLI가 필요합니다. [설정·사용법·복구 안내](docs/orca.ko.md)
+Orca에서 Codex로 작업 중이면 **같은 세션의 Discord 스레드에 그냥 답변하면 됩니다.** macOS/Linux에서 실행 중인 세션을 자동으로 찾습니다. `/orca`로 연결을 확인하고 **화면 확인**으로 질문을 읽을 수 있습니다. Claude 및 수동 연결은 `/orca action:list`를 사용합니다. Direct 모드와 실행 가능한 Orca CLI가 필요합니다. [설정·사용법·복구 안내](docs/orca.ko.md)
 
 ## v2.0 Release
 

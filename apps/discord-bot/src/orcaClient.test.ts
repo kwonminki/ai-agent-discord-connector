@@ -10,6 +10,28 @@ function runner(response: unknown) {
 }
 
 describe("Orca CLI adapter", () => {
+  it("resolves only the terminal of the exact running session without listing or choosing", async () => {
+    const owner = { sessionId: "session", terminalHandle: target.handle, processKey: "123:456" };
+    const find = vi.fn(async () => owner);
+    const run = runner({ terminal: target });
+    const client = createOrcaClient("orca", run, find);
+    expect(await client.resolveSession!("codex", "session")).toEqual({ ...target, processKey: owner.processKey });
+    expect(find).toHaveBeenCalledWith("session");
+    expect(run).toHaveBeenLastCalledWith("orca", ["terminal", "show", "--terminal", target.handle, "--json"], expect.anything());
+  });
+  it("does not call Orca for sessions without a live owner or unsupported agents", async () => {
+    const run = runner({});
+    const find = vi.fn(async () => null);
+    const client = createOrcaClient("orca", run, find);
+    expect(await client.resolveSession!("claude", "session")).toBeNull();
+    expect(find).not.toHaveBeenCalled();
+    expect(await client.resolveSession!("codex", "session")).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+  });
+  it.each([{ handle: "term_other" }, { agentIdentity: "claude" }, { connected: false }])("refuses a changed or unavailable session target: %o", async (change) => {
+    const client = createOrcaClient("orca", runner({ terminal: { ...target, ...change } }), async () => ({ sessionId: "session", terminalHandle: target.handle, processKey: "123:456" }));
+    await expect(client.resolveSession!("codex", "session")).rejects.toThrow("unavailable");
+  });
   it("resolves one executable and avoids the Linux screen reader", () => {
     expect(resolveOrcaCommand({}, "linux")).toBe("orca-ide");
     expect(resolveOrcaCommand({}, "darwin")).toBe("orca");

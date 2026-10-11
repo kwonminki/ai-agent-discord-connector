@@ -16,19 +16,20 @@ const targetSchema = z.object({
 const stateSchema = z.object({
   version: z.literal(1),
   bindings: z.record(targetSchema),
+  autoDisabled: z.record(z.boolean()).default({}),
   receipts: z.record(z.object({ at: z.number(), status: z.enum(["pending", "accepted", "unknown", "rejected"]) })),
 });
 type State = z.infer<typeof stateSchema>;
 const RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCORD_EPOCH = 1420070400000n;
 
-export type OrcaCommand = { action: "list" | "status" | "read" | "disconnect" | "connect" | "select" | "send" | "invalid"; value?: string };
+export type OrcaCommand = { action: "list" | "status" | "read" | "disconnect" | "connect" | "select" | "send" | "auto" | "invalid"; value?: string };
 export function parseOrcaCommand(content: string): OrcaCommand | null {
   const match = content.trim().match(/^\/?orca(?:\s+(\S+))?(?:\s+([\s\S]*))?$/i);
   if (!match) return null;
-  const action = (match[1] ?? "list").toLowerCase();
+  const action = (match[1] ?? "status").toLowerCase();
   const value = match[2]?.trim();
-  if (["list", "status", "read", "disconnect"].includes(action) && !value) return { action: action as OrcaCommand["action"] };
+  if (["list", "status", "read", "disconnect", "auto"].includes(action) && !value) return { action: action as OrcaCommand["action"] };
   if (action === "connect" && /^term_[A-Za-z0-9_-]{1,100}$/.test(value ?? "")) return { action, value };
   if (action === "select" && /^[a-f0-9-]{36}$/.test(value ?? "")) return { action, value };
   if (action === "send" && value) return { action, value };
@@ -52,7 +53,7 @@ export function createOrcaBridge(input: {
   async function read(): Promise<State> {
     try { return stateSchema.parse(JSON.parse(await readFile(input.file, "utf8"))); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, bindings: {}, receipts: {} };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, bindings: {}, autoDisabled: {}, receipts: {} };
       throw new Error(t("Orca 연결 파일을 읽을 수 없습니다. 복구 전에는 입력을 보내지 않습니다.", "Cannot read Orca bindings. Input is blocked until the state file is repaired."));
     }
   }
@@ -80,15 +81,38 @@ export function createOrcaBridge(input: {
   async function checked(target: OrcaTarget) {
     const live = await input.client!.show(target.handle);
     if (!isOrcaAgent(live) || !sameOrcaTarget(target, live)) {
-      throw new Error(t("터미널이 종료되거나 바뀌었습니다. /orca에서 다시 선택하세요. 자동 재연결하지 않았습니다.", "The terminal ended or changed. Select it again with /orca. It was not automatically rebound."));
+      throw new Error(t("터미널이 종료되거나 바뀌었습니다. /orca list에서 다시 선택하세요. 자동 재연결하지 않았습니다.", "The terminal ended or changed. Select it again with /orca list. It was not automatically rebound."));
     }
     return live;
   }
   async function process(message: DiscordMessageLike, context: ManagedDiscordChannelContext, busy: () => boolean): Promise<boolean> {
     const command = parseOrcaCommand(message.content);
     const state = await read();
-    const bound = state.bindings[message.channelId];
+    let bound: OrcaTarget | undefined = state.bindings[message.channelId];
+    const sessionId = context.channelMode === "session-linked" ? context.codexSessionId : null;
+    const authorized = !context.allowedRoleIds.length || context.allowedRoleIds.some((role) => message.roleIds.includes(role));
+    let automatic = false;
+    // Synced threads already name the session. Resolve its actual CLI owner rather
+    // than guessing from a title/cwd or asking the user to repeat the association.
+    const ordinaryText = !command && !message.connectorCommand && !/^\s*(\/|__cdc_)/.test(message.content);
+    const autoControl = command && ["status", "read", "send"].includes(command.action);
+    if (!bound && sessionId && input.client?.resolveSession && !state.autoDisabled[message.channelId] &&
+        authorized && !message.authorBot && !message.relayRequest && !message.restoreOnly && !message.durableQueuedAt &&
+        !busy() && (ordinaryText || autoControl)) {
+      bound = await input.client.resolveSession("codex", sessionId) ?? undefined;
+      automatic = !!bound;
+    }
     if (!command && !bound) return false;
+    async function verifyTarget(target: OrcaTarget) {
+      const live = await checked(target);
+      if (automatic) {
+        const owner = await input.client!.resolveSession!("codex", sessionId!);
+        if (!owner || !sameOrcaTarget(target, owner) || owner.processKey !== target.processKey) {
+          throw new Error(t("답변 전송 전에 작업 세션이 바뀌었습니다. 이 스레드의 작업을 다시 열어 주세요. 입력은 보내지 않았습니다.", "The session owner changed before delivery. Reopen this thread's session. No input was sent."));
+        }
+      }
+      return live;
+    }
     const reply = (text: string, refresh = false) => message.reply(panel(text, refresh));
     if (message.authorBot || message.relayRequest) {
       await reply(t("Orca 연결 채널은 사람의 직접 입력만 받습니다.", "Orca-bound channels accept direct human input only."));
@@ -100,8 +124,17 @@ export function createOrcaBridge(input: {
     }
     if (command?.action === "disconnect") {
       delete state.bindings[message.channelId];
+      state.autoDisabled[message.channelId] = true;
       await save(state);
-      await reply(t("Orca 연결을 해제했습니다. 다음 입력은 일반 봇으로 처리됩니다.", "Orca disconnected. Subsequent messages use the regular connector."));
+      await reply(t("Orca 연결과 자동 연결을 해제했습니다. 다음 입력은 일반 봇으로 처리됩니다. /orca auto로 자동 연결을 다시 켤 수 있습니다.", "Orca disconnected and automatic routing disabled. Subsequent messages use the regular connector. Use /orca auto to re-enable it."));
+      return true;
+    }
+    if (command?.action === "auto") {
+      if (busy()) throw new Error(t("이 채널의 작업이 끝난 뒤 자동 연결로 변경하세요.", "Wait for this channel's connector jobs to finish before changing routing."));
+      delete state.bindings[message.channelId];
+      delete state.autoDisabled[message.channelId];
+      await save(state);
+      await reply(t("자동 연결을 켰습니다. 이 스레드의 Codex 세션이 Orca에서 실행 중이면 일반 답변을 그 작업으로 보냅니다.", "Automatic routing enabled. Replies go to this thread's Codex session when it is running in Orca."));
       return true;
     }
     if (!input.client) {
@@ -109,7 +142,7 @@ export function createOrcaBridge(input: {
       return true;
     }
     if (command?.action === "invalid") {
-      await reply("/orca · /orca connect <terminal> · /orca status · /orca read · /orca disconnect · /orca send <text>");
+      await reply("/orca · /orca read · /orca auto · /orca disconnect · /orca send <text> · /orca list · /orca connect <terminal>");
       return true;
     }
     if (command?.action === "list") {
@@ -138,7 +171,7 @@ export function createOrcaBridge(input: {
       if (command.action === "select") {
         const selected = selections.get(command.value!);
         if (!selected || selected.channelId !== message.channelId || selected.userId !== message.userId || selected.expires < now()) {
-          throw new Error(t("선택 메뉴가 만료되었거나 다른 사용자의 메뉴입니다. /orca를 다시 여세요.", "This menu expired or belongs to another user. Open /orca again."));
+          throw new Error(t("선택 메뉴가 만료되었거나 다른 사용자의 메뉴입니다. /orca list를 다시 여세요.", "This menu expired or belongs to another user. Open /orca list again."));
         }
         target = await checked(selected.target);
       } else {
@@ -157,13 +190,13 @@ export function createOrcaBridge(input: {
       return true;
     }
     if (!bound) {
-      await reply(t("먼저 /orca에서 터미널을 선택하세요.", "Select a terminal with /orca first."));
+      await reply(t("이 스레드의 세션을 실행하는 Orca 터미널을 찾지 못했습니다. 일반 봇 처리는 유지됩니다. 수동 연결이 필요하면 /orca list를 사용하세요.", "No Orca terminal is running this thread's session. Regular connector routing remains available. For manual binding, use /orca list."));
       return true;
     }
     if (command?.action === "status" || command?.action === "read") {
-      const target = await checked(bound);
+      const target = await verifyTarget(bound);
       const screen = command.action === "read" ? await input.client.screen(target) : "";
-      await checked(target);
+      await verifyTarget(bound);
       await reply(`${label(target)}${screen ? `\n\n\`\`\`text\n${screen.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/`/g, "ˋ").slice(-3200)}\n\`\`\`` : ""}`, true);
       return true;
     }
@@ -189,9 +222,9 @@ export function createOrcaBridge(input: {
         t("이 메시지는 이미 전송을 시도했습니다. 화면에서 반영 여부를 확인하세요. 자동 재전송하지 않았습니다.", "Delivery was already attempted. Check the screen; it was not automatically resent."), true);
       return true;
     }
-    const target = await checked(bound);
+    const target = await verifyTarget(bound);
     await input.client.screen(target, true); // Read current UI before typing; refuse unavailable/stopped screens.
-    await checked(target);
+    await verifyTarget(bound);
     for (const [key, receipt] of Object.entries(state.receipts)) if (receipt.at < now() - RECEIPT_TTL_MS) delete state.receipts[key];
     state.receipts[receiptId] = { at: now(), status: "pending" };
     await save(state); // Write-ahead receipt prevents duplicate submission after a crash/timeout.

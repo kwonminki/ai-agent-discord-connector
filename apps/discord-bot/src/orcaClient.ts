@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { findOrcaCodexOwner, type OrcaSessionOwner } from "./orcaSessionOwner.js";
 
 const terminalSchema = z.object({
   handle: z.string().min(1),
@@ -14,12 +15,13 @@ const terminalSchema = z.object({
   orphaned: z.boolean().default(false),
 });
 export type OrcaTerminal = z.infer<typeof terminalSchema>;
-export type OrcaTarget = OrcaTerminal & { runtimeId: string };
+export type OrcaTarget = OrcaTerminal & { runtimeId: string; processKey?: string };
 export interface OrcaClient {
   list(): Promise<{ terminals: OrcaTarget[]; truncated: boolean }>;
   show(handle: string): Promise<OrcaTarget>;
   screen(target: OrcaTarget, beforeInput?: boolean): Promise<string>;
   send(target: OrcaTarget, text: string): Promise<{ accepted: boolean; turnStarted: boolean }>;
+  resolveSession?(agent: "codex" | "claude", sessionId: string): Promise<OrcaTarget | null>;
 }
 
 export function resolveOrcaCommand(
@@ -50,6 +52,7 @@ const envelopeSchema = z.object({
 export function createOrcaClient(
   command = resolveOrcaCommand(),
   run: (command: string, args: string[], options: { timeout: number; maxBuffer: number; windowsHide: boolean }) => Promise<{ stdout: string }> = promisify(execFile),
+  findOwner: (sessionId: string) => Promise<OrcaSessionOwner | null> = findOrcaCodexOwner,
 ): OrcaClient {
   let guide: Promise<void> | undefined;
   async function invoke(args: string[]) {
@@ -75,6 +78,17 @@ export function createOrcaClient(
     return envelopeSchema.parse(await invoke(args));
   }
   return {
+    async resolveSession(agent, sessionId) {
+      if (agent !== "codex") return null;
+      const owner = await findOwner(sessionId);
+      if (!owner) return null;
+      const response = await call(["terminal", "show", "--terminal", owner.terminalHandle]);
+      const { terminal } = z.object({ terminal: terminalSchema }).parse(response.result);
+      if (terminal.handle !== owner.terminalHandle || terminal.agentIdentity !== "codex" || !isOrcaAgent(terminal)) {
+        throw new Error("The Orca terminal owning this session is unavailable. No input was forwarded.");
+      }
+      return { ...terminal, runtimeId: response._meta.runtimeId, processKey: owner.processKey };
+    },
     async list() {
       const response = await call(["terminal", "list", "--limit", "100"]);
       const result = z.object({ terminals: z.array(z.unknown()), truncated: z.boolean().default(false) }).parse(response.result);

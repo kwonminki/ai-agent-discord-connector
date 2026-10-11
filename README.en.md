@@ -12,7 +12,7 @@ A personal bridge for using **AI agents such as Codex and Claude Code running on
 
 ## Reply to Orca CLI work from Discord
 
-Use `/orca` to select a running Codex / Claude terminal. Ordinary messages in that channel are forwarded to it. **Read screen** shows the current question; `/orca action:disconnect` restores regular connector behavior. Requires Direct mode and a reachable Orca CLI. [Setup, usage, and recovery](docs/orca.en.md)
+With Codex running in Orca, **reply in its synced Discord thread**. The gateway automatically finds the matching CLI session on macOS/Linux. `/orca` checks the connection and **Read screen** shows the question. Use `/orca action:list` for Claude or manual binding. Requires Direct mode and a reachable Orca CLI. [Setup, usage, and recovery](docs/orca.en.md)
 
 ## Agent styles and skills
 

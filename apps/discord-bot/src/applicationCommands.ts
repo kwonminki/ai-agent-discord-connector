@@ -125,10 +125,11 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
     name: "orca",
     description: "Connect this channel to an existing Orca Codex / Claude terminal.",
     options: [
-      stringOption({ name: "action", description: "Action (default: terminal picker)", choices: [
+      stringOption({ name: "action", description: "Action (default: session connection status)", choices: [
         { name: "list", value: "list" }, { name: "connect", value: "connect" },
         { name: "status", value: "status" }, { name: "read", value: "read" },
         { name: "disconnect", value: "disconnect" }, { name: "send", value: "send" },
+        { name: "auto", value: "auto" },
       ] }),
       stringOption({ name: "terminal", description: "Exact term_ handle for connect" }),
       stringOption({ name: "text", description: "Literal input for send (including CLI slash commands)" }),
@@ -846,7 +847,7 @@ export function routeDiscordApplicationCommand(
 
   switch (commandName) {
     case "orca": {
-      const action = interaction.options.getString("action") || "list";
+      const action = interaction.options.getString("action") || "status";
       const value = action === "send" ? interaction.options.getString("text") :
         action === "connect" ? interaction.options.getString("terminal") : null;
       return `/orca ${action}${value ? ` ${value}` : ""}`;

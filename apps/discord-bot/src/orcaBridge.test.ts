@@ -39,7 +39,7 @@ describe("Orca Discord bridge", () => {
     expect(parseOrcaCommand("orca connect term_test --other")).toEqual({ action: "invalid" });
   });
   it("binds the selected process only for the menu owner and channel", async () => {
-    const menu = message("/orca"); await bridge.handle(menu, context, idle);
+    const menu = message("/orca list"); await bridge.handle(menu, context, idle);
     const payload = vi.mocked(menu.reply).mock.calls[0][0] as any;
     const token = payload.components[0].components[0].options[0].value;
     const selected = routeDiscordComponent("cdc:orca:select", [token])!;
@@ -51,7 +51,7 @@ describe("Orca Discord bridge", () => {
     expect(JSON.parse(await readFile(file, "utf8")).bindings.channel.handle).toBe("term_test");
   });
   it("rejects a changed process selected from an older menu", async () => {
-    const menu = message("/orca"); await bridge.handle(menu, context, idle);
+    const menu = message("/orca list"); await bridge.handle(menu, context, idle);
     const token = (vi.mocked(menu.reply).mock.calls[0][0] as any).components[0].components[0].options[0].value;
     vi.mocked(client.show).mockResolvedValue({ ...target, incarnationId: "new" });
     const selected = message(`/orca select ${token}`); await bridge.handle(selected, context, idle);
@@ -59,11 +59,12 @@ describe("Orca Discord bridge", () => {
   });
   it("excludes shells, disconnected and orphaned terminals from the picker", async () => {
     vi.mocked(client.list).mockResolvedValue({ terminals: [target, { ...target, handle: "shell", agentIdentity: undefined }, { ...target, handle: "offline", connected: false }, { ...target, handle: "orphan", orphaned: true }], truncated: false });
-    const menu = message("/orca"); await bridge.handle(menu, context, idle);
+    const menu = message("/orca list"); await bridge.handle(menu, context, idle);
     expect((vi.mocked(menu.reply).mock.calls[0][0] as any).components[0].components[0].options).toHaveLength(1);
   });
-  it("forwards ordinary answers directly without starting another app-server writer", async () => {
-    await connect();
+  it.each(["manual", "automatic"])("forwards %s answers without starting another app-server writer", async (mode) => {
+    if (mode === "manual") await connect();
+    else client.resolveSession = vi.fn().mockResolvedValue({ ...target, processKey: "123:456" });
     const submitCodexPrompt = vi.fn(); const submitClaudePrompt = vi.fn(); const submitCommandJob = vi.fn();
     const handler = createDiscordMessageHandler({ orcaBridge: bridge, resolveChannelContext: async () => context, submitCodexPrompt, submitClaudePrompt, submitCommandJob, updateChannelCwd: vi.fn(), recordCommandAudit: vi.fn() });
     const answer = message("continue with option 2"); await handler(answer);
@@ -109,7 +110,7 @@ describe("Orca Discord bridge", () => {
     expect(client.send).toHaveBeenCalledTimes(1);
   });
   it("does not expose terminal metadata to unauthorized roles", async () => {
-    await bridge.handle(message("/orca", { roleIds: [] }), context, idle);
+    await bridge.handle(message("/orca list", { roleIds: [] }), context, idle);
     expect(client.list).not.toHaveBeenCalled(); await connect();
     await bridge.handle(message("answer", { roleIds: [] }), context, idle);
     expect(client.send).not.toHaveBeenCalled();
@@ -156,5 +157,61 @@ describe("Orca Discord bridge", () => {
   it("refuses Discord messages older than the receipt retention horizon", async () => {
     await connect(); const oldId = (((BigInt(Date.now() - 8 * 86400000) - 1420070400000n) << 22n)).toString();
     await bridge.handle(message("hello", { messageId: oldId }), context, idle); expect(client.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("automatic routing for an already synced Discord thread", () => {
+  it("forwards a plain reply by exact session ID without any menu or persisted binding", async () => {
+    client.resolveSession = vi.fn().mockResolvedValue({ ...target, processKey: "pid:start" });
+    const answer = message("choose option 2");
+    expect(await bridge.handle(answer, context, idle)).toBe(true);
+    expect(client.resolveSession).toHaveBeenCalledWith("codex", context.codexSessionId);
+    expect(client.send).toHaveBeenCalledExactlyOnceWith(target, "choose option 2");
+    expect(JSON.parse(await readFile(file, "utf8")).bindings).toEqual({});
+  });
+  it("leaves unowned sessions and connector commands on the existing routing path", async () => {
+    client.resolveSession = vi.fn().mockResolvedValue(null);
+    expect(await bridge.handle(message("hello"), context, idle)).toBe(false);
+    client.resolveSession = vi.fn().mockResolvedValue(target);
+    expect(await bridge.handle(message("fork", { connectorCommand: true }), context, idle)).toBe(false);
+    expect(await bridge.handle(message("/fork"), context, idle)).toBe(false);
+    expect(await bridge.handle(message("hello"), context, () => true)).toBe(false);
+    expect(client.resolveSession).not.toHaveBeenCalled();
+    expect(client.send).not.toHaveBeenCalled();
+  });
+  it("does not discover terminals for unauthorized users, relay bots or restored jobs", async () => {
+    client.resolveSession = vi.fn().mockResolvedValue(target);
+    for (const extra of [{ roleIds: [] }, { authorBot: true, relayRequest: true }, { restoreOnly: true }, { durableQueuedAt: "past" }]) {
+      await bridge.handle(message("hello", extra), context, idle);
+    }
+    expect(client.resolveSession).not.toHaveBeenCalled(); expect(client.send).not.toHaveBeenCalled();
+  });
+  it("revalidates the session owner immediately before sending", async () => {
+    client.resolveSession = vi.fn().mockResolvedValueOnce({ ...target, processKey: "old" }).mockResolvedValue({ ...target, processKey: "new" });
+    const msg = message("hello"); expect(await bridge.handle(msg, context, idle)).toBe(true);
+    expect(description(msg)).toContain("session owner changed"); expect(client.send).not.toHaveBeenCalled();
+  });
+  it("automatically resolves a fresh runtime on the next reply instead of keeping an old handle", async () => {
+    client.resolveSession = vi.fn().mockResolvedValue(target);
+    await bridge.handle(message("first"), context, idle);
+    const next = { ...target, runtimeId: "new-runtime", handle: "term_new", incarnationId: "new-process" };
+    client.resolveSession = vi.fn().mockResolvedValue(next); vi.mocked(client.show).mockResolvedValue(next);
+    await bridge.handle(message("second", { messageId: "second" }), context, idle);
+    expect(client.send).toHaveBeenLastCalledWith(next, "second");
+  });
+  it("respects disconnect across restarts and supports re-enabling automatic routing", async () => {
+    client.resolveSession = vi.fn().mockResolvedValue(target);
+    await bridge.handle(message("/orca disconnect"), context, idle);
+    const restarted = createOrcaBridge({ client, file, locale: "en" });
+    expect(await restarted.handle(message("hello"), context, idle)).toBe(false);
+    expect(client.resolveSession).not.toHaveBeenCalled();
+    await restarted.handle(message("/orca auto"), context, idle);
+    await restarted.handle(message("hello"), context, idle);
+    expect(client.send).toHaveBeenCalledTimes(1);
+  });
+  it("makes /orca report the current session rather than opening a picker", async () => {
+    client.resolveSession = vi.fn().mockResolvedValue(target);
+    const msg = message("/orca"); await bridge.handle(msg, context, idle);
+    expect(client.list).not.toHaveBeenCalled(); expect(description(msg)).toContain("term_test");
   });
 });

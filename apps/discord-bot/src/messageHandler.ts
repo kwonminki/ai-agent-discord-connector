@@ -4678,7 +4678,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           handled = await input.orcaBridge.handle(incomingMessage, context, () => {
             const queue = channelQueues.get(incomingMessage.channelId);
             const action = parseOrcaCommand(incomingMessage.content)?.action;
-            const bindingChange = action === "connect" || action === "select";
+            const bindingChange = action === "connect" || action === "select" || action === "auto";
             return Boolean(deferredRestartRequested || restartScheduled || queue?.activeMessage || queue?.pending.length ||
               (bindingChange && [...incomingMessages].some((message) => message !== incomingMessage && message.channelId === incomingMessage.channelId)) ||
               [...activeForkMessages].some((message) => message.channelId === incomingMessage.channelId));

@@ -7,13 +7,17 @@ The Direct-mode gateway can send your Discord replies to an existing Codex or Cl
 ## Use it
 
 1. Update the connector source, install dependencies, and restart the **gateway**. It registers `/orca` on startup. The independent Worker need not restart for this feature.
-2. Keep Orca and the intended Codex/Claude terminal running. In a managed Discord channel or thread, run `/orca` and select the terminal. Check the host and terminal name. You can also use `/orca action:connect terminal:term_...` with an exact handle.
-3. Press **Read screen** or run `/orca action:read` to see the current terminal screen. Send an ordinary text message to answer. It is typed into that terminal with Enter.
-4. Run `/orca action:disconnect` to return the channel to normal connector behavior.
+2. With Codex running in Orca, **reply in the Discord thread already synced to that session**. No terminal picker is required: the reply is typed into that session's terminal with Enter.
+3. Run `/orca` to check the current connection. Press **Read screen** or run `/orca action:read` to see the current question.
+4. `/orca action:disconnect` also disables automatic routing for this thread. `/orca action:auto` enables it again.
 
-`/orca action:status` checks the binding. `/orca action:send text:...` sends literal input, including CLI slash commands such as `/compact`. Text commands `/orca read`, `/orca send ...`, and `/orca disconnect` work too. Other connector slash commands are blocked while bound; disconnect to use them. Connector styles and skills do not get injected into these replies, because Orca owns the running CLI's configuration.
+Automatic routing supports Codex CLI processes running under the gateway's user on the same macOS/Linux machine. It matches the thread's session ID against the CLI's primary session metadata and Orca-issued terminal handle. It never guesses from a title or directory, and excludes subagent sessions. If no Orca CLI owns the session, existing connector routing continues. If an owner is found but its Orca connection cannot be verified, delivery stops with an error.
 
-Use the Discord thread already synced to the same agent session if you want its existing transcript notifications. Orca binding does **not** discover/relink the underlying Codex/Claude session ID, create a chat, or continuously mirror terminal output. **Read screen** works even without transcript sync. Keyboard-only dialogs, arrow-key selection, authentication, and file uploads still require Orca. Do not type in the local composer at the same time as sending from Discord.
+For Claude Code, channels without session sync, or terminals on a different machine, select a terminal with `/orca action:list`. Check its name and host, or specify an exact handle with `/orca action:connect terminal:term_...`. Manual bindings block other connector commands until disconnected; automatic routing leaves commands such as `/fork` available.
+
+`/orca action:send text:...` sends literal CLI commands such as `/compact`. Text commands `/orca read`, `/orca send ...`, `/orca disconnect`, `/orca auto`, and `/orca list` also work. Styles and skills follow the running Orca CLI's configuration.
+
+Answer notifications use existing session transcript sync. Orca routing does not create a new chat or continuously mirror the screen. **Read screen** also works without transcript sync. Keyboard-only dialogs, authentication, and file uploads still require Orca. Avoid typing in the local composer while sending from Discord.
 
 ## Gateway configuration
 
@@ -47,9 +51,9 @@ Validate with the **same executable and account** as the gateway:
 ## Recovery and permissions
 
 - Channel operator-role checks apply to listing, binding, reading, and sending. The channel's allowed users share input and screen access; use a private thread/channel. Ordinary shells and terminals not identified by Orca as Codex/Claude are excluded.
-- Bindings pin the runtime, terminal handle, process incarnation, host, and agent identity. They survive a gateway restart, but a changed Orca runtime/process requires an explicit new selection. One terminal can bind to only one channel in a gateway. Unavailable targets never fall back to another terminal or a new agent writer.
+- Automatic routing resolves the current owner of the same session for each reply and rechecks its process before delivery. Manual bindings pin the runtime, terminal handle, process incarnation, host, and agent identity; a changed runtime/process requires a new selection. One terminal can be manually bound to only one channel. Verification failures never fall back to another terminal or a new writer.
 - A menu expires after five minutes and only its requesting user can select it in that channel. Binding is refused while connector jobs are active/queued there.
 - Input acceptance is reported separately from observed turn start; neither means the work completed. After a transport timeout, inspect the screen before sending a new message. The gateway never automatically retries input.
-- `.connect/orca-bindings.json` stores private bindings and seven days of delivery IDs/statuses, **not prompts or terminal output**. `CONNECT_ORCA_STATE_PATH` overrides its location; managed launches keep it under the installation's `.connect` directory. Preserve this file during updates. A pending receipt after a crash prevents resubmitting the same Discord message. Messages older than seven days and restored connector jobs are not forwarded.
+- `.connect/orca-bindings.json` stores manual bindings, per-thread automatic-routing opt-outs, and seven days of delivery IDs/statuses, **not prompts or terminal output**. `CONNECT_ORCA_STATE_PATH` overrides its location; managed launches keep it under the installation's `.connect` directory. Preserve this file during updates. A pending receipt after a crash prevents resubmitting the same Discord message. Messages older than seven days and restored connector jobs are not forwarded.
 - Multiple gateways must not share a state file. If it becomes invalid, repair/restore it before continuing; routing fails closed. Do not delete receipts merely to retry a request whose outcome is uncertain.
 - A screen read is a bounded current frame (up to 40 rows), not a full transcript. Older Orca builds without the guide, stable identity metadata, or rendered-screen API must be updated. If a local draft is reported, forwarding pauses until it is cleared/submitted locally. Orca's metadata checks cannot eliminate a race with a human changing the terminal after the check.
