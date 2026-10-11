@@ -26,6 +26,7 @@ export interface DirectConnectConfig {
     timeoutMs: number;
     codexHome: string;
     maintenanceAgent?: "codex" | "claude";
+    orca?: { command?: string; enabled?: boolean };
     relay?: {
       trustedBotUserIds: string[];
       controlChannelId: string;

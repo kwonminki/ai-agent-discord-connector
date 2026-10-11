@@ -31,6 +31,7 @@ export interface DirectConnectConfig {
     timeoutMs: number;
     codexHome: string;
     maintenanceAgent?: "codex" | "claude";
+    orca?: { command?: string; enabled?: boolean };
     relay?: {
       trustedBotUserIds: string[];
       controlChannelId: string;
@@ -64,6 +65,7 @@ export interface BuildDirectConfigInput {
   timeoutMs?: number;
   locale?: string;
   maintenanceAgent?: string;
+  orcaCommand?: string;
 }
 
 export interface BuildHubConfigInput {
@@ -129,6 +131,7 @@ export function buildDirectConfig(input: BuildDirectConfigInput): DirectConnectC
       timeoutMs: input.timeoutMs ?? 30_000,
       codexHome: input.codexHome ?? path.join(os.homedir(), ".codex"),
       ...(maintenanceAgent ? { maintenanceAgent } : {}),
+      ...(input.orcaCommand?.trim() ? { orca: { command: input.orcaCommand.trim() } } : {}),
     },
   };
 }

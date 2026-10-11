@@ -10,6 +10,10 @@
 
 Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI agent를 Discord 스레드로 사용하고, 서로 대화시킬 수 있는 개인용 브리지**입니다.
 
+## Orca CLI 작업에 Discord로 답변
+
+`/orca`에서 실행 중인 Codex / Claude 터미널을 선택하면 이 채널의 일반 메시지가 그 터미널로 전달됩니다. **화면 확인**으로 질문을 읽고, `/orca action:disconnect`로 원래 봇 동작으로 돌아옵니다. Direct 모드와 실행 가능한 Orca CLI가 필요합니다. [설정·사용법·복구 안내](docs/orca.ko.md)
+
 ## v2.0 Release
 
 > ### NEW · 대화로 만드는 Harness

@@ -234,3 +234,7 @@ The Local Agent reads `CODEX_HOME`, usually `$HOME/.codex`, then loads active se
 Archived Codex sessions, sub-agent sessions, one-off `codex exec`/CLI sessions, and index entries that cannot be verified in Codex thread state are excluded from default sync. Bridge-archived session ids in `.connect/state.json` are also excluded.
 
 Import is read-only. The agent does not modify native Codex files.
+
+## Orca terminal input
+
+Direct gateways include `/orca` for binding a Discord channel to a running Orca Codex/Claude terminal. This avoids competing app-server writers for CLI-owned work. See the [English](orca.en.md) or [Korean](orca.ko.md) guide for executable discovery, service configuration, screen access, restart behavior, and delivery receipts.

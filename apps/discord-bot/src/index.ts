@@ -63,6 +63,8 @@ import {
   registerDiscordApplicationCommands,
 } from "./discordClient.js";
 import { createDiscordMessageHandler } from "./messageHandler.js";
+import { createOrcaClient } from "./orcaClient.js";
+import { createOrcaBridge } from "./orcaBridge.js";
 import type { BotReloadExecutionState, DiscordOutgoingMessage } from "./messageHandler.js";
 import { createHarnessStore } from "./harnessStore.js";
 import {
@@ -730,6 +732,12 @@ export async function startBot(): Promise<void> {
           })
       : undefined;
   const processMessage = createDiscordMessageHandler({
+    orcaBridge: createOrcaBridge({
+      client: connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_ORCA_ENABLED, connectConfig.direct.orca?.enabled ?? true)
+        ? createOrcaClient(process.env.CONNECT_ORCA_COMMAND?.trim() || connectConfig.direct.orca?.command?.trim() || undefined) : undefined,
+      file: process.env.CONNECT_ORCA_STATE_PATH?.trim() || ".connect/orca-bindings.json",
+      locale,
+    }),
     guidanceStore: createAgentGuidanceStore(".connect/agent-guidance-settings.json"),
     locale,
     resolveChannelContext: controlApiClient.getChannelContext,

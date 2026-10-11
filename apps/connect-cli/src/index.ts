@@ -80,6 +80,7 @@ export function buildManagedProcessEnv(
     CONNECT_STATE_PATH: path.join(launchDirectory, ".connect", "state.json"),
     CONNECT_WORKER_ROOT: path.join(launchDirectory, ".connect", "worker"),
     CONNECT_DISCORD_QUEUE_ROOT: path.join(launchDirectory, ".connect", "discord-queue"),
+    CONNECT_ORCA_STATE_PATH: baseEnv.CONNECT_ORCA_STATE_PATH || path.join(launchDirectory, ".connect", "orca-bindings.json"),
     CONNECT_MODE: mode,
   };
 }
@@ -233,6 +234,7 @@ async function setup(flags: Map<string, string | boolean>) {
           computerDisplayName: flag(flags, "computer-name"),
           codexHome: flag(flags, "codex-home"),
           maintenanceAgent: flag(flags, "maintenance-agent"),
+          orcaCommand: flag(flags, "orca-command") ?? process.env.CONNECT_ORCA_COMMAND,
           locale,
         });
 

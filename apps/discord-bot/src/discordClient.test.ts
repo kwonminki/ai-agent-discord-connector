@@ -816,6 +816,7 @@ describe("attachDiscordInteractionHandler", () => {
 
     attachDiscordInteractionHandler(client, handleMessage);
     handlers.get("interactionCreate")?.({
+      id: "interaction-delivery-1",
       isButton: () => true,
       customId: "cdc:sync:25",
       user: { id: "discord-user-1" },
@@ -832,6 +833,8 @@ describe("attachDiscordInteractionHandler", () => {
     expect(client.on).toHaveBeenCalledWith("interactionCreate", expect.any(Function));
     expect(handleMessage).toHaveBeenCalledWith({
       authorBot: false,
+      connectorCommand: true,
+      messageId: "interaction-delivery-1",
       userId: "discord-user-1",
       channelId: "discord-channel-1",
       content: "sync select 25",

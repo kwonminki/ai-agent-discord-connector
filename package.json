@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-discord-connector",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "private": false,
   "description": "Run and manage local AI agent workflows from trusted Discord channels.",
   "license": "MIT",
@@ -49,6 +49,8 @@
     "docs/agent-relay.ko.md",
     "docs/agent-relay.en.md",
     "docs/agent-guidance.ko.md",
+    "docs/orca.ko.md",
+    "docs/orca.en.md",
     "docs/python-anti-slop-proposal.ko.md",
     "docs/AI_AGENT_GUIDE.md",
     "docs/AI_AGENT_GUIDE.en.md",

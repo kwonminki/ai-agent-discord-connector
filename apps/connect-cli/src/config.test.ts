@@ -122,9 +122,11 @@ describe("connect setup config", () => {
       roleIds: "role-operator",
       workspaceRoot: "/repo",
       maintenanceAgent: "claude",
+      orcaCommand: "/custom/Orca CLI/orca",
     });
 
     expect(config.direct.maintenanceAgent).toBe("claude");
+    expect(config.direct.orca).toEqual({ command: "/custom/Orca CLI/orca" });
     expect(renderEnvFile(config)).toContain('CONNECT_MAINTENANCE_AGENT="claude"');
   });
 

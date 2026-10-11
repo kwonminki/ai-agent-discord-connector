@@ -10,6 +10,10 @@
 
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
+## Reply to Orca CLI work from Discord
+
+Use `/orca` to select a running Codex / Claude terminal. Ordinary messages in that channel are forwarded to it. **Read screen** shows the current question; `/orca action:disconnect` restores regular connector behavior. Requires Direct mode and a reachable Orca CLI. [Setup, usage, and recovery](docs/orca.en.md)
+
 ## Agent styles and skills
 
 The default is `attention-kind` plus Karpathy coding guidelines and verification before completion. `/set_style` opens a dropdown; `/set_skill` toggles individual skills; `/pure` disables connector-added guidance; `/skills_reset` restores inheritance/defaults. Claude Code uses native output styles and Codex reads linked files through a generated `AGENTS.md`. Preferences persist across restarts. See the [usage and extension guide (Korean)](docs/agent-guidance.ko.md) and [vendored sources and licenses](agent-assets/README.md).

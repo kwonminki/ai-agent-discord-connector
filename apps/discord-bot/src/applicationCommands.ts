@@ -122,6 +122,19 @@ function booleanOption(input: {
 
 export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDefinition[] = [
   {
+    name: "orca",
+    description: "Connect this channel to an existing Orca Codex / Claude terminal.",
+    options: [
+      stringOption({ name: "action", description: "Action (default: terminal picker)", choices: [
+        { name: "list", value: "list" }, { name: "connect", value: "connect" },
+        { name: "status", value: "status" }, { name: "read", value: "read" },
+        { name: "disconnect", value: "disconnect" }, { name: "send", value: "send" },
+      ] }),
+      stringOption({ name: "terminal", description: "Exact term_ handle for connect" }),
+      stringOption({ name: "text", description: "Literal input for send (including CLI slash commands)" }),
+    ],
+  },
+  {
     name: "set_style",
     description: "응답 스타일 선택 메뉴를 엽니다.",
     options: [stringOption({
@@ -832,6 +845,12 @@ export function routeDiscordApplicationCommand(
   const commandName = interaction.commandName.trim().toLowerCase();
 
   switch (commandName) {
+    case "orca": {
+      const action = interaction.options.getString("action") || "list";
+      const value = action === "send" ? interaction.options.getString("text") :
+        action === "connect" ? interaction.options.getString("terminal") : null;
+      return `/orca ${action}${value ? ` ${value}` : ""}`;
+    }
     case "codex":
       return `codex ${interaction.options.getString("prompt", true)?.trim() ?? ""}`.trim();
     case "codex-command": {

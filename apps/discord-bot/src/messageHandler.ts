@@ -1,5 +1,6 @@
 import { agentGuidancePanel, parseAgentGuidanceCommand } from "./agentGuidanceCommands.js";
 import type { AgentGuidanceStore } from "./agentGuidanceStore.js";
+import { parseOrcaCommand, type OrcaBridge } from "./orcaBridge.js";
 import {
   classifyCommand,
   extractHarnessCandidate,
@@ -190,6 +191,7 @@ export interface DiscordMessageLike {
   content: string;
   roleIds: string[];
   messageId?: string;
+  connectorCommand?: boolean;
   attachments?: DiscordIncomingAttachment[];
   requestId?: string;
   durableQueuedAt?: string;
@@ -345,6 +347,7 @@ export interface CreateDiscordMessageHandlerInput {
   }) => Promise<{ content: string; files: MaterializedDiscordAttachment[] }>;
   harnessStore?: HarnessStore;
   guidanceStore?: AgentGuidanceStore;
+  orcaBridge?: OrcaBridge;
 }
 
 export interface DiscordMessageHandler {
@@ -936,6 +939,8 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
   const channelQueues = new Map<string, ChannelQueue>();
   const activeForkMessages = new Set<DiscordMessageLike>();
+  const activeOrcaMessages = new Set<DiscordMessageLike>();
+  const incomingMessages = new Set<DiscordMessageLike>();
   const codexSessionIdsByChannel = new Map<string, string>();
   const claudeSessionIdsByChannel = new Map<string, string>();
   const agentSettingsController = createAgentSettingsController({
@@ -974,6 +979,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
 
   function executionState(excludeActiveMessage?: DiscordMessageLike): BotReloadExecutionState {
     let activeCount = activeForkMessages.size - (excludeActiveMessage && activeForkMessages.has(excludeActiveMessage) ? 1 : 0);
+    activeCount += activeOrcaMessages.size - (excludeActiveMessage && activeOrcaMessages.has(excludeActiveMessage) ? 1 : 0);
     let pendingCount = 0;
 
     for (const queue of channelQueues.values()) {
@@ -4640,7 +4646,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
   }
 
-  const handleDiscordMessage = async (incomingMessage: DiscordMessageLike): Promise<void> => {
+  const processIncomingMessage = async (incomingMessage: DiscordMessageLike): Promise<void> => {
     if (incomingMessage.authorBot && !incomingMessage.relayRequest) {
       return;
     }
@@ -4654,6 +4660,35 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       const relayChannelContext = await input.resolveChannelContext(incomingMessage.channelId);
       if (!relayChannelContext || relayChannelContext.channelMode === "shell-admin") {
         return;
+      }
+    }
+
+    // Orca owns its existing CLI writer. Route before prompt queues, steering,
+    // pending app-server questions, and local attachment materialization.
+    if (input.orcaBridge || parseOrcaCommand(incomingMessage.content)) {
+      const context = await input.resolveChannelContext(incomingMessage.channelId);
+      if (context) {
+        if (!input.orcaBridge) {
+          await incomingMessage.reply("Orca requires a Direct-mode gateway with Orca integration enabled.");
+          return;
+        }
+        activeOrcaMessages.add(incomingMessage);
+        let handled: boolean;
+        try {
+          handled = await input.orcaBridge.handle(incomingMessage, context, () => {
+            const queue = channelQueues.get(incomingMessage.channelId);
+            const action = parseOrcaCommand(incomingMessage.content)?.action;
+            const bindingChange = action === "connect" || action === "select";
+            return Boolean(deferredRestartRequested || restartScheduled || queue?.activeMessage || queue?.pending.length ||
+              (bindingChange && [...incomingMessages].some((message) => message !== incomingMessage && message.channelId === incomingMessage.channelId)) ||
+              [...activeForkMessages].some((message) => message.channelId === incomingMessage.channelId));
+          });
+          if (handled) await completeDurableMessage(incomingMessage);
+        } finally {
+          activeOrcaMessages.delete(incomingMessage);
+          await restartAfterQueueDrain();
+        }
+        if (handled) return;
       }
     }
 
@@ -4805,6 +4840,12 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       );
       void drainChannelQueue(message.channelId, queue as ChannelQueue);
     });
+  };
+
+  const handleDiscordMessage = async (message: DiscordMessageLike): Promise<void> => {
+    incomingMessages.add(message);
+    try { await processIncomingMessage(message); }
+    finally { incomingMessages.delete(message); }
   };
 
   handleDiscordMessage.drainRestoredMessages = () => {

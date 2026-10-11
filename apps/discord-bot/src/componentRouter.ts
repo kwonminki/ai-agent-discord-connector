@@ -151,6 +151,11 @@ function selectedSurveyAnswers(values: string[]): string[] {
 }
 
 export function routeDiscordComponent(customId: string, values: string[] = []): string | null {
+  if (customId === "cdc:orca:select") {
+    return values.length === 1 && /^[a-f0-9-]{36}$/.test(values[0]) ? `/orca select ${values[0]}` : null;
+  }
+  if (customId === "cdc:orca:read") return "/orca read";
+  if (customId === "cdc:orca:disconnect") return "/orca disconnect";
   if (customId === "cdc:guidance:style") {
     return values.length === 1 && [...AGENT_STYLES.map((style) => style.id), "off", "inherit"].includes(values[0])
       ? `set_style ${values[0]}` : null;

@@ -931,6 +931,8 @@ async function handleCwdPickerInteraction(
       components: [],
     });
     await handleMessage({
+      connectorCommand: true,
+      messageId: (componentInteraction as { id?: string }).id,
       authorBot: false,
       userId: componentInteraction.user.id,
       channelId: componentInteraction.channelId,
@@ -1302,6 +1304,8 @@ export function attachDiscordInteractionHandler(
         }
 
         await handleMessage({
+          connectorCommand: true,
+          messageId: (interaction as { id?: string }).id,
           authorBot: false,
           userId: interaction.user.id,
           channelId: interaction.channelId,
@@ -1376,6 +1380,8 @@ export function attachDiscordInteractionHandler(
           }
 
           await handleMessage({
+            connectorCommand: true,
+            messageId: (interaction as { id?: string }).id,
             authorBot: false,
             userId: interaction.user.id,
             channelId: interaction.channelId,
@@ -1417,6 +1423,8 @@ export function attachDiscordInteractionHandler(
         }
 
         await handleMessage({
+          connectorCommand: true,
+          messageId: (interaction as { id?: string }).id,
           authorBot: false,
           userId: interaction.user.id,
           channelId: interaction.channelId,
@@ -1455,6 +1463,8 @@ export function attachDiscordInteractionHandler(
           }
 
           await handleMessage({
+            connectorCommand: true,
+            messageId: (interaction as { id?: string }).id,
             authorBot: false,
             userId: interaction.user.id,
             channelId: interaction.channelId,
@@ -1487,6 +1497,8 @@ export function attachDiscordInteractionHandler(
         const isCurrent = interaction.customId === "cdc:chat:submit:current";
 
         await handleMessage({
+          connectorCommand: true,
+          messageId: (interaction as { id?: string }).id,
           authorBot: false,
           userId: interaction.user.id,
           channelId: interaction.channelId,
@@ -1527,6 +1539,8 @@ export function attachDiscordInteractionHandler(
         }
 
         await handleMessage({
+          connectorCommand: true,
+          messageId: (interaction as { id?: string }).id,
           authorBot: false,
           userId: interaction.user.id,
           channelId: interaction.channelId,
@@ -1694,6 +1708,8 @@ export function attachDiscordInteractionHandler(
       }
 
       await handleMessage({
+        connectorCommand: true,
+        messageId: (componentInteraction as { id?: string }).id,
         authorBot: false,
         userId: componentInteraction.user.id,
         channelId: componentInteraction.channelId,
