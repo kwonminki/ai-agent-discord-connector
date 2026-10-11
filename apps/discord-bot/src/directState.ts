@@ -21,7 +21,7 @@ export interface SyncedWorkspaceState {
 
 export type TranscriptSyncMode = "on-chat" | "realtime";
 export type DiscordSessionDeliveryMode = "channel" | "thread";
-export type DiscordSessionChannelPurpose = "maintenance";
+export type DiscordSessionChannelPurpose = "maintenance" | "subagent-index" | "subagent-redirect";
 
 export interface SyncedSessionChannelState {
   codexSessionId: string | null;
@@ -35,6 +35,12 @@ export interface SyncedSessionChannelState {
   discordParentChannelId?: string | null;
   discordDeliveryMode?: DiscordSessionDeliveryMode;
   channelPurpose?: DiscordSessionChannelPurpose | null;
+  subagent?: import("../../../packages/codex-adapter/src/parser.js").CodexSubagent;
+  subagentRootSessionId?: string;
+  subagentIndexChannelId?: string;
+  subagentAnnouncedAt?: string;
+  redirectChannelId?: string;
+  redirectPostedAt?: string;
   channelMode?: ChannelMode;
   claudeSessionId?: string | null;
   agentModelOverride?: string | null;

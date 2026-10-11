@@ -8,6 +8,8 @@
 
 [한국어](README.md) | English
 
+[Subagent threads](docs/subagents.en.md)
+
 A personal bridge for using **AI agents such as Codex and Claude Code running on macOS, Windows, or Ubuntu through Discord threads and letting those agents converse with one another**.
 
 ## Reply to Desktop work from Discord

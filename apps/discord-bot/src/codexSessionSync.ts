@@ -17,6 +17,9 @@ const DISCORD_SYNC_CONCURRENCY = 5;
 const MAX_DISCORD_THREAD_NAME_LENGTH = 100;
 
 export interface DiscordGuildSurface {
+  ensureSubagentContainer?(parentChannelId: string): Promise<{ id: string }>;
+  archiveThread?(id: string): Promise<void>;
+  threadOperatorIds?(id: string, roleIds: string[]): Promise<string[]>;
   createCategory(input: { name: string }): Promise<{ id: string }>;
   createTextChannel(input: { name: string; parentId?: string | null; topic?: string }): Promise<{ id: string }>;
   createThread?(input: {
@@ -170,7 +173,7 @@ async function postSessionContextIfNeeded(input: {
 
   try {
     const mentionRoleIds =
-      input.channel.discordDeliveryMode === "thread"
+      input.channel.discordDeliveryMode === "thread" && !input.channel.subagent
         ? input.mentionRoleIds?.filter((roleId) => roleId.trim().length > 0)
         : [];
 
@@ -323,7 +326,7 @@ export async function syncCodexSessionsToDiscord(
   const state = await input.stateStore.read();
   const initialWorkspaceRoots = new Set(state.workspaces.map((workspace) => workspace.workspaceRoot));
   const bridgeArchivedSessionIds = new Set(state.archivedCodexSessionIds);
-  const activeSessions = input.sessions.filter((session) => !bridgeArchivedSessionIds.has(session.id));
+  const activeSessions = input.sessions.filter((session) => !bridgeArchivedSessionIds.has(session.id) && !session.subagent && !state.sessionChannels.some(channel => channel.codexSessionId === session.id && channel.subagent));
   // A fork transcript is discoverable before the Worker can return its new
   // session id. Do not let background sync claim it ahead of the pending
   // Discord fork thread.

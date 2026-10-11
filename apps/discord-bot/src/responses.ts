@@ -59,9 +59,12 @@ export interface DiscordMessagePayload {
   allowedMentions: {
     parse: [];
     roles?: string[];
+    users?: string[];
   };
   content?: string;
   ephemeral?: boolean;
+  nonce?: string;
+  enforceNonce?: boolean;
   embeds: DiscordEmbedPayload[];
   components?: DiscordActionRowPayload[];
   files?: DiscordFilePayload[];

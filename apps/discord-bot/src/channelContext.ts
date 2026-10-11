@@ -1,9 +1,12 @@
 import type { ChannelMode } from "../../../packages/core/src/index.js";
 import type { AgentDefaultSettings, AgentEffort, AgentKind } from "./agentSettings.js";
-import type { DiscordSessionDeliveryMode } from "./directState.js";
+import type { DiscordSessionDeliveryMode, DiscordSessionChannelPurpose } from "./directState.js";
 
 export interface ManagedDiscordChannelContext {
   channelMode: ChannelMode;
+  channelPurpose?: DiscordSessionChannelPurpose | null;
+  subagent?: import("../../../packages/codex-adapter/src/parser.js").CodexSubagent;
+  redirectChannelId?: string;
   allowedRoleIds: string[];
   computerId: string;
   computerDisplayName: string;

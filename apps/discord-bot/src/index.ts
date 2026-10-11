@@ -65,6 +65,7 @@ import {
   registerDiscordApplicationCommands,
 } from "./discordClient.js";
 import { createDiscordMessageHandler } from "./messageHandler.js";
+import { syncSubagentThreads, subagentThreadName } from "./subagentThreads.js";
 import { createOrcaClient } from "./orcaClient.js";
 import { createOrcaBridge } from "./orcaBridge.js";
 import type { BotReloadExecutionState, DiscordOutgoingMessage } from "./messageHandler.js";
@@ -352,12 +353,16 @@ export async function startBot(): Promise<void> {
               ? connectConfig.hub.controlApiUrl
               : process.env.CONTROL_API_URL ?? "http://127.0.0.1:4317",
         });
+  const orcaClient = connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_ORCA_ENABLED, connectConfig.direct.orca?.enabled ?? true)
+    ? createOrcaClient(process.env.CONNECT_ORCA_COMMAND?.trim() || connectConfig.direct.orca?.command?.trim() || undefined) : undefined;
+  let orcaDiscoveryRetryAt = 0;
   const listDirectCodexSessions =
     connectConfig?.mode === "direct"
       ? async (
           options: {
             activeOnly?: boolean;
             includeExecSessions?: boolean;
+            includeSubAgents?: boolean;
             includeSessionIds?: string[];
           } = {},
         ): Promise<DiscoveredCodexSession[]> => {
@@ -366,6 +371,7 @@ export async function startBot(): Promise<void> {
             codexHome: connectConfig.direct.codexHome,
             activeOnly: options.activeOnly,
             includeExecSessions: options.includeExecSessions,
+            includeSubAgents: options.includeSubAgents,
             includeSessionIds: options.includeSessionIds,
           });
 
@@ -373,7 +379,18 @@ export async function startBot(): Promise<void> {
             throw new Error(response.error.message);
           }
 
-          return response.result as DiscoveredCodexSession[];
+          const sessions = response.result as DiscoveredCodexSession[];
+          const state = await directStateStore?.read();
+          const relations = new Map(state?.sessionChannels.filter(channel => channel.codexSessionId && channel.subagent)
+            .map(channel => [channel.codexSessionId!, channel.subagent!]));
+          if (orcaClient?.subagents && Date.now() >= orcaDiscoveryRetryAt) {
+            try { for (const link of await orcaClient.subagents()) relations.set(link.sessionId, link.subagent); }
+            catch { orcaDiscoveryRetryAt = Date.now() + 60_000; console.warn("Orca subagent discovery unavailable; retaining proven relationships."); }
+          }
+          return sessions.map(session => {
+            const subagent = session.subagent ?? relations.get(session.id);
+            return subagent ? { ...session, subagent, threadName: subagentThreadName({ ...session, subagent }) } : session;
+          });
         }
       : undefined;
   const syncCodexSessions =
@@ -501,6 +518,7 @@ export async function startBot(): Promise<void> {
           const sessions = await listDirectCodexSessions?.({
             activeOnly: false,
             includeExecSessions: true,
+            includeSubAgents: true,
             includeSessionIds: linkedSessionIds,
           });
 
@@ -508,6 +526,10 @@ export async function startBot(): Promise<void> {
             throw new Error("Direct Codex session listing is not connected.");
           }
 
+          await syncSubagentThreads({ guild: input.guild, controlApi: controlApiClient, stateStore: directStateStore,
+            sessions, adminChannelId: connectConfig.direct.channelId, computerId: connectConfig.direct.computerId,
+            computerDisplayName: connectConfig.direct.computerDisplayName, defaultWorkspaceRoot: connectConfig.direct.workspaceRoot,
+            mentionRoleIds: connectConfig.discord.allowedRoleIds });
           return notifyCodexTaskCompletions({
             guild: input.guild,
             controlApi: controlApiClient,
@@ -743,11 +765,24 @@ export async function startBot(): Promise<void> {
           locale,
         }) : undefined,
     orcaBridge: createOrcaBridge({
-      client: connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_ORCA_ENABLED, connectConfig.direct.orca?.enabled ?? true)
-        ? createOrcaClient(process.env.CONNECT_ORCA_COMMAND?.trim() || connectConfig.direct.orca?.command?.trim() || undefined) : undefined,
+      client: orcaClient,
       file: process.env.CONNECT_ORCA_STATE_PATH?.trim() || ".connect/orca-bindings.json",
       locale,
     }),
+    resolveSubagentParentChannel: directStateStore ? async (parentSessionId) => {
+      const state = await directStateStore.read();
+      const seen = new Set<string>();
+      let id = parentSessionId;
+      while (!seen.has(id)) {
+        seen.add(id);
+        const matches = state.sessionChannels.filter(channel => channel.codexSessionId === id && !channel.channelPurpose);
+        if (matches.length !== 1) return null;
+        const channel = matches[0];
+        if (channel.subagent?.source !== "codex") return channel.discordChannelId;
+        id = channel.subagent.parentSessionId;
+      }
+      return null;
+    } : undefined,
     guidanceStore: createAgentGuidanceStore(".connect/agent-guidance-settings.json"),
     locale,
     resolveChannelContext: controlApiClient.getChannelContext,

@@ -111,10 +111,15 @@ async function macOwners(): Promise<OrcaSessionOwner[]> {
 
 export async function findOrcaCodexOwner(sessionId: string, options: { platform?: NodeJS.Platform; procRoot?: string } = {}): Promise<OrcaSessionOwner | null> {
   if (!sessionPattern.test(sessionId)) return null;
-  const platform = options.platform ?? process.platform;
-  const owners = platform === "linux" ? await linuxOwners(options.procRoot ?? "/proc") :
-    platform === "darwin" ? await macOwners() : [];
+  const owners = await listOrcaCodexOwners(options);
   const matches = owners.filter((owner) => owner.sessionId === sessionId);
   if (matches.length > 1) throw new Error("More than one Orca CLI owns this session. Close the duplicate session before replying.");
   return matches[0] ?? null;
+}
+
+export async function listOrcaCodexOwners(options: { platform?: NodeJS.Platform; procRoot?: string } = {}): Promise<OrcaSessionOwner[]> {
+  const platform = options.platform ?? process.platform;
+  const owners = platform === "linux" ? await linuxOwners(options.procRoot ?? "/proc") :
+    platform === "darwin" ? await macOwners() : [];
+  return owners;
 }

@@ -283,6 +283,8 @@ async function prepareOutgoingMessage(
   return localizeDiscordOutgoing(preparedContent, locale);
 }
 
+const subagentContainerCache = new Map<string, { id: string; expiresAt: number }>();
+
 export function createDiscordGuildSurface(
   guild: Guild | null,
   surfaceOptions: { answerCopyStore?: AnswerCopyStore; locale?: ConnectorLocale } = {},
@@ -292,6 +294,48 @@ export function createDiscordGuildSurface(
   }
 
   return {
+    async ensureSubagentContainer(parentChannelId) {
+      const cacheKey = `${guild.id}:${parentChannelId}`;
+      const cached = subagentContainerCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return { id: cached.id };
+      const parent = await guild.channels.fetch(parentChannelId);
+      if (!parent || parent.type !== ChannelType.GuildText) throw new Error("Subagent parent must be a text channel.");
+      const topic = `AI Agent Discord Connector subagents for ${parentChannelId}`;
+      const channels = await guild.channels.fetch();
+      const matches = [...channels.values()].filter(channel => channel?.type === ChannelType.GuildText && channel.topic === topic);
+      if (matches.length > 1) throw new Error("Duplicate subagent containers; refusing ambiguous routing.");
+      const permissions = parent.permissionOverwrites.cache.map(overwrite => ({ id: overwrite.id, type: overwrite.type, allow: overwrite.allow, deny: overwrite.deny }));
+      const existing = matches[0];
+      if (existing?.type === ChannelType.GuildText) {
+        const samePermissions = existing.permissionOverwrites.cache.size === parent.permissionOverwrites.cache.size &&
+          existing.permissionOverwrites.cache.every(overwrite => {
+            const original = parent.permissionOverwrites.cache.get(overwrite.id);
+            return original?.type === overwrite.type && original.allow.equals(overwrite.allow) && original.deny.equals(overwrite.deny);
+          });
+        if (!samePermissions) await existing.permissionOverwrites.set(permissions);
+        subagentContainerCache.set(cacheKey, { id: existing.id, expiresAt: Date.now() + 60_000 });
+        return { id: existing.id };
+      }
+      const channel = await guild.channels.create({ name: `${parent.name.slice(0, 80)}-subagents`, type: ChannelType.GuildText,
+        parent: parent.parentId, topic, permissionOverwrites: permissions });
+      subagentContainerCache.set(cacheKey, { id: channel.id, expiresAt: Date.now() + 60_000 });
+      return { id: channel.id };
+    },
+    async archiveThread(id) {
+      const thread = await guild.channels.fetch(id);
+      if (thread?.isThread()) await thread.setArchived(true, "Subagent conversation moved; history preserved");
+    },
+    async threadOperatorIds(id, roleIds) {
+      const thread = await guild.channels.fetch(id);
+      if (!thread?.isThread()) return [];
+      const members = await thread.members.fetch();
+      const users: string[] = [];
+      for (const member of members.values()) {
+        const user = await guild.members.fetch(member.id);
+        if (!user.user.bot && (!roleIds.length || roleIds.some(role => user.roles.cache.has(role)))) users.push(member.id);
+      }
+      return users;
+    },
     async createCategory(input) {
       const category = await guild.channels.create({
         name: input.name,

@@ -121,6 +121,7 @@ export interface ListCodexSessionsInput {
   codexHome: string;
   activeOnly?: boolean;
   includeExecSessions?: boolean;
+  includeSubAgents?: boolean;
   includeSessionIds?: string[];
 }
 

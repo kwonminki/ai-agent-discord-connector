@@ -8,6 +8,8 @@
 
 한국어 | [English](README.en.md)
 
+[서브 에이전트 모아보기](docs/subagents.ko.md)
+
 Mac, Windows, Ubuntu 서버에서 실행되는 **Codex와 Claude Code 같은 AI agent를 Discord 스레드로 사용하고, 서로 대화시킬 수 있는 개인용 브리지**입니다.
 
 ## 앱에서 시작한 작업에 Discord로 답변

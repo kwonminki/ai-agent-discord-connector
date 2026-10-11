@@ -347,6 +347,7 @@ export interface CreateDiscordMessageHandlerInput {
   }) => Promise<{ content: string; files: MaterializedDiscordAttachment[] }>;
   harnessStore?: HarnessStore;
   guidanceStore?: AgentGuidanceStore;
+  resolveSubagentParentChannel?(parentSessionId: string): Promise<string | null>;
   orcaBridge?: OrcaBridge;
   desktopBridge?: OrcaBridge;
 }
@@ -532,7 +533,7 @@ async function sendThreadCompletionMention(input: {
     return "deferred";
   }
 
-  const mentionRoleIds = input.channelContext.allowedRoleIds.filter(
+  const mentionRoleIds = (input.channelContext.subagent ? [] : input.channelContext.allowedRoleIds).filter(
     (roleId) => roleId.trim().length > 0,
   );
 
@@ -1476,9 +1477,9 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
       const sent = await inputTurn.guild.sendTextMessage(
         inputTurn.thread.discordChannelId,
         typeof payload === "string"
-          ? withRoleMentions(payload, inputTurn.sourceContext.allowedRoleIds)
+          ? withRoleMentions(payload, inputTurn.sourceContext.subagent ? [] : inputTurn.sourceContext.allowedRoleIds)
           : payload,
-        { mentionRoleIds: inputTurn.sourceContext.allowedRoleIds },
+        { mentionRoleIds: inputTurn.sourceContext.subagent ? [] : inputTurn.sourceContext.allowedRoleIds },
       );
       if (!sent?.id || !inputTurn.guild.editTextMessage) {
         return;
@@ -1844,7 +1845,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
         const resultMessage = await inputRun.message.guild?.sendTextMessage?.(
           thread.discordChannelId,
           `${formatHarnessRunReady({ ...run, executionAgentSessionId: provisioned.sessionId, status: "ready" })}\n\n${provisioned.visibleMessage}`,
-          { mentionRoleIds: sourceContext.allowedRoleIds },
+          { mentionRoleIds: sourceContext.subagent ? [] : sourceContext.allowedRoleIds },
         );
         if (resultMessage?.id) {
           run = await input.harnessStore.updateRunExecution(run.runId, {
@@ -2003,7 +2004,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             "",
             formatHarnessBuildStatus(refreshed),
           ].filter(Boolean).join("\n"), refreshed),
-          { mentionRoleIds: channelContext.allowedRoleIds },
+          { mentionRoleIds: channelContext.subagent ? [] : channelContext.allowedRoleIds },
         );
         await updateQueuedReply(
           provisioningReply,
@@ -2597,7 +2598,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     const reply = (replyMessage: DiscordOutgoingMessage) => message.reply(replyMessage);
     const replyWithRoleMentions = createReplyWithOptionalRoleMentions(
       reply,
-      channelContext.channelMode !== "shell-admin" && channelContext.discordDeliveryMode === "thread"
+      !channelContext.subagent && channelContext.channelMode !== "shell-admin" && channelContext.discordDeliveryMode === "thread"
         ? channelContext.allowedRoleIds
         : [],
     );
@@ -3346,7 +3347,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           queuedReply,
           fallbackReply: (replyMessage) => reply(replyMessage),
           payload: formatAgentResultUpdate(codexMessage, response),
-          questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
+          questionMentionRoleIds: message.relayRequest || channelContext.subagent ? [] : channelContext.allowedRoleIds,
         });
         const responseFailed = promptResponseFailed(response);
         const completionDelivery = await sendThreadCompletionMention({
@@ -3378,7 +3379,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           queuedReply,
           fallbackReply: (replyMessage) => reply(replyMessage),
           payload: formatAgentResultUpdate(codexMessage, { error: { message: messageText } }),
-          questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
+          questionMentionRoleIds: message.relayRequest || channelContext.subagent ? [] : channelContext.allowedRoleIds,
         });
         await sendThreadCompletionMention({
           message,
@@ -3705,7 +3706,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               forkSessionId,
               finalMessage,
             }),
-            { mentionRoleIds: channelContext.allowedRoleIds },
+            { mentionRoleIds: channelContext.subagent ? [] : channelContext.allowedRoleIds },
           );
           const harnessForkNotice = [
             candidateNotice,
@@ -4027,7 +4028,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           payload: resultPayload,
           postAsNewMessage: channelContext.discordDeliveryMode === "thread",
           terminalPayload: formatAgentResultPosted({ agentLabel: "Claude Code", failed: responseFailed }),
-          questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
+          questionMentionRoleIds: message.relayRequest || channelContext.subagent ? [] : channelContext.allowedRoleIds,
         });
         await harnessProgressReporter?.finish(
           responseFailed ? "failed" : "completed",
@@ -4068,7 +4069,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           payload: resultPayload,
           postAsNewMessage: channelContext.discordDeliveryMode === "thread",
           terminalPayload: formatAgentResultPosted({ agentLabel: "Claude Code", failed: true }),
-          questionMentionRoleIds: channelContext.allowedRoleIds,
+          questionMentionRoleIds: channelContext.subagent ? [] : channelContext.allowedRoleIds,
         });
         await sendAgentRelayCallback({
           message,
@@ -4416,7 +4417,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             failed: responseFailed,
             intermediate: responseIntermediate,
           }),
-          questionMentionRoleIds: message.relayRequest ? [] : channelContext.allowedRoleIds,
+          questionMentionRoleIds: message.relayRequest || channelContext.subagent ? [] : channelContext.allowedRoleIds,
         });
         await harnessProgressReporter?.finish(
           responseFailed ? "failed" : "completed",
@@ -4487,7 +4488,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           payload: resultPayload,
           postAsNewMessage: channelContext.discordDeliveryMode === "thread",
           terminalPayload: formatAgentResultPosted({ agentLabel: "Codex", failed: true }),
-          questionMentionRoleIds: channelContext.allowedRoleIds,
+          questionMentionRoleIds: channelContext.subagent ? [] : channelContext.allowedRoleIds,
         });
         await sendAgentRelayCallback({
           message,
@@ -4647,8 +4648,38 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
     }
   }
 
+  const forwardedSubagentMessages = new WeakSet<DiscordMessageLike>();
   const processIncomingMessage = async (incomingMessage: DiscordMessageLike): Promise<void> => {
     if (incomingMessage.authorBot && !incomingMessage.relayRequest) {
+      return;
+    }
+
+    const subagentContext = await input.resolveChannelContext(incomingMessage.channelId);
+    if (subagentContext?.channelPurpose === "subagent-index" || subagentContext?.channelPurpose === "subagent-redirect") {
+      await incomingMessage.reply({ allowedMentions: { parse: [] }, embeds: [], content:
+        subagentContext.redirectChannelId ? `대화는 <#${subagentContext.redirectChannelId}>에서 이어가세요. / Continue in the linked thread.` :
+        "이 스레드는 서브 에이전트 목록·알림 전용입니다. 아래 개별 스레드 링크에서 대화하세요. / Notifications only; reply in a child thread." });
+      await completeDurableMessage(incomingMessage);
+      return;
+    }
+    if (subagentContext?.subagent?.source === "codex" && !forwardedSubagentMessages.has(incomingMessage)) {
+      if (!hasAllowedRole(incomingMessage.roleIds, subagentContext.allowedRoleIds) || incomingMessage.authorBot || incomingMessage.relayRequest || incomingMessage.restoreOnly) return;
+      const parentChannelId = await input.resolveSubagentParentChannel?.(subagentContext.subagent.parentSessionId);
+      if (!parentChannelId || incomingMessage.attachments?.length || incomingMessage.connectorCommand || /^\s*(\/|__cdc_)/.test(incomingMessage.content)) {
+        await incomingMessage.reply("Codex 자식에게는 일반 텍스트를 보내세요. 부모 작업 연결이 있어야 전달할 수 있습니다. 명령·첨부는 부모 스레드에서 처리하세요. / Send text here; commands and attachments belong in the parent thread.");
+        return;
+      }
+      const forwarded: DiscordMessageLike = { ...incomingMessage, channelId: parentChannelId,
+        content: `The user sent a message to your existing subagent ${subagentContext.codexSessionId}. Forward the message below to that exact existing subagent using your subagent messaging capability. Do not create a new agent or fork. If it is closed or unavailable, explain that.
+
+User message:
+${incomingMessage.content}`,
+      };
+      forwardedSubagentMessages.add(forwarded);
+      await incomingMessage.reply({ allowedMentions: { parse: [] }, embeds: [], content:
+        `부모 작업 <#${parentChannelId}>에 자식 전달을 요청합니다. 실제 자식의 답변은 이 스레드에 표시됩니다. / Requesting the parent to relay your message; child replies appear here.` });
+      await processIncomingMessage(forwarded);
+      await completeDurableMessage(incomingMessage);
       return;
     }
 

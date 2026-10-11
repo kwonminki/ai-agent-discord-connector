@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { findOrcaCodexOwner, type OrcaSessionOwner } from "./orcaSessionOwner.js";
+import { findOrcaCodexOwner, listOrcaCodexOwners, type OrcaSessionOwner } from "./orcaSessionOwner.js";
+
+import { resolveOrcaSubagents, type OrcaSubagentLink } from "./orcaSubagents.js";
 
 const terminalSchema = z.object({
   handle: z.string().min(1),
@@ -17,6 +19,7 @@ const terminalSchema = z.object({
 export type OrcaTerminal = z.infer<typeof terminalSchema>;
 export type OrcaTarget = OrcaTerminal & { runtimeId: string; processKey?: string };
 export interface OrcaClient {
+  subagents?(): Promise<OrcaSubagentLink[]>;
   list(): Promise<{ terminals: OrcaTarget[]; truncated: boolean }>;
   show(handle: string): Promise<OrcaTarget>;
   screen(target: OrcaTarget, beforeInput?: boolean): Promise<string>;
@@ -53,8 +56,11 @@ export function createOrcaClient(
   command = resolveOrcaCommand(),
   run: (command: string, args: string[], options: { timeout: number; maxBuffer: number; windowsHide: boolean }) => Promise<{ stdout: string }> = promisify(execFile),
   findOwner: (sessionId: string) => Promise<OrcaSessionOwner | null> = findOrcaCodexOwner,
+  listOwners: () => Promise<OrcaSessionOwner[]> = listOrcaCodexOwners,
 ): OrcaClient {
   let guide: Promise<void> | undefined;
+  let orchestrationGuide: Promise<unknown> | undefined;
+  let linksCache: { at: number; links: OrcaSubagentLink[] } | undefined;
   async function invoke(args: string[]) {
     try {
       // Never use a shell: prompts, handles, and executable paths are literal argv.
@@ -78,6 +84,48 @@ export function createOrcaClient(
     return envelopeSchema.parse(await invoke(args));
   }
   return {
+    async subagents() {
+      if (linksCache && Date.now() - linksCache.at < 30_000) return linksCache.links;
+      const owners = await listOwners();
+      if (!owners.length) { linksCache = { at: Date.now(), links: [] }; return []; }
+      orchestrationGuide ??= invoke(["skills", "get", "orchestration"]).then(value => {
+        const object = value as { markdown?: unknown; result?: { markdown?: unknown } };
+        if (typeof (object?.markdown ?? object?.result?.markdown) !== "string") throw new Error("Orca orchestration guide unavailable.");
+      }).catch(error => { orchestrationGuide = undefined; throw error; });
+      await orchestrationGuide;
+      const terminals = await Promise.all(owners.map(owner => this.show(owner.terminalHandle)));
+      const links: OrcaSubagentLink[] = [];
+      let cursor: string | undefined;
+      // Bounded pagination; never inspect/mutate inboxes or worker lifecycle.
+      for (let page = 0; page < 10; page++) {
+        const response = await call(["orchestration", "run-list", "--limit", "100", ...(cursor ? ["--cursor", cursor] : [])]);
+        const runs = z.object({ runs: z.array(z.object({ id: z.string(), coordinator_handle: z.string().nullable() })), nextCursor: z.string().nullish() }).parse(response.result);
+        for (const run of runs.runs) {
+          if (!owners.some(owner => owner.terminalHandle === run.coordinator_handle)) continue;
+          const tasksResponse = await call(["orchestration", "task-list", "--run", run.id, "--brief"]);
+          const tasks = z.object({ tasks: z.array(z.unknown()) }).parse(tasksResponse.result).tasks;
+          const workers: unknown[] = [];
+          let workerCursor: string | undefined;
+          for (let p = 0; p < 10; p++) {
+            const response = await call(["orchestration", "worker-list", "--run", run.id, "--include-remote", "--limit", "100", ...(workerCursor ? ["--cursor", workerCursor] : [])]);
+            const result = z.object({ workers: z.array(z.unknown()), page: z.object({ hasMore: z.boolean(), nextCursor: z.string().nullish() }) }).parse(response.result);
+            workers.push(...result.workers);
+            workerCursor = result.page.nextCursor ?? undefined;
+            if (!result.page.hasMore || !workerCursor) break;
+          }
+          links.push(...resolveOrcaSubagents({ runId: run.id, owners, terminals, workers, tasks }));
+        }
+        cursor = runs.nextCursor ?? undefined;
+        if (!cursor) break;
+      }
+      const currentOwners = await listOwners();
+      const unchanged = (id: string) => owners.some(before => before.sessionId === id && currentOwners.some(after =>
+        after.sessionId === id && after.terminalHandle === before.terminalHandle && after.processKey === before.processKey));
+      const stable = links.filter(link => unchanged(link.sessionId) && unchanged(link.subagent.parentSessionId) &&
+        new Set(links.filter(other => other.sessionId === link.sessionId).map(other => other.subagent.parentSessionId)).size === 1);
+      linksCache = { at: Date.now(), links: stable };
+      return stable;
+    },
     async resolveSession(agent, sessionId) {
       if (agent !== "codex") return null;
       const owner = await findOwner(sessionId);

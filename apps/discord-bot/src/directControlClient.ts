@@ -124,6 +124,9 @@ export function createDirectControlClient(
         cwd: syncedChannel.cwd,
         timeoutMs: config.direct.timeoutMs,
         codexSessionId: syncedChannel.codexSessionId,
+        channelPurpose: syncedChannel.channelPurpose,
+        subagent: syncedChannel.subagent,
+        redirectChannelId: syncedChannel.redirectChannelId,
         claudeSessionId: syncedChannel.claudeSessionId ?? null,
         discordDeliveryMode: syncedChannel.discordDeliveryMode ?? "channel",
         discordParentChannelId: syncedChannel.discordParentChannelId ?? null,
@@ -205,6 +208,7 @@ export function createDirectControlClient(
         result: await discoverCodexSessions(input.codexHome, {
           activeOnly: input.activeOnly ?? true,
           includeExecSessions: input.includeExecSessions ?? false,
+          includeSubAgents: input.includeSubAgents ?? false,
           includeSessionIds: input.includeSessionIds,
           includeContextPreview: true,
           includeRealtimeEvents: true,

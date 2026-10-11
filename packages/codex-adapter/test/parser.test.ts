@@ -34,6 +34,40 @@ async function createCodexGoalsDatabase(codexHome: string, sql: string) {
 }
 
 describe("codex parser", () => {
+  it("discovers unindexed native children and preserves their parent through appended events", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-subagent-"));
+    const id = "019db2be-b2b3-7e82-9e61-8c84b28ad289";
+    try {
+      const dir = path.join(home, "sessions", "2026", "10", "11"); await fs.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `rollout-2026-10-11T00-00-00-${id}.jsonl`);
+      const source = { subagent: { thread_spawn: { parent_thread_id: "root", agent_nickname: "Noether", agent_path: "/root/review" } } };
+      await fs.writeFile(file, JSON.stringify({ type: "session_meta", payload: { id, cwd: "/repo", source, forked_from_id: "root" } }) + "\n");
+      await createCodexStateDatabase(home, `create table threads (id text primary key, archived integer, source text); create table thread_spawn_edges (parent_thread_id text, child_thread_id text); insert into threads values ('${id}', 0, '${JSON.stringify(source)}'); insert into thread_spawn_edges values ('root', '${id}');`);
+      const options = { includeSubAgents: true, includeRealtimeEvents: true, activeOnly: false };
+      expect(await discoverCodexSessions(home, options)).toMatchObject([{ id, subagent: { source: "codex", parentSessionId: "root", name: "Noether", agentPath: "/root/review" } }]);
+      await fs.appendFile(file, JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }) + "\n");
+      expect((await discoverCodexSessions(home, options))[0].subagent?.parentSessionId).toBe("root");
+      expect(await discoverCodexSessions(home)).toEqual([]);
+      expect(parseSessionMetaLine(JSON.stringify({ type: "session_meta", payload: { id: "fork", cwd: "/repo", forked_from_id: "root", source: "cli" } }))?.subagent).toBeUndefined();
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(Number(process.versions.node.split(".")[0]) < 22)("refreshes spawn edges while the database stays in WAL mode", async () => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-wal-"));
+    const db = new DatabaseSync(path.join(home, "state_5.sqlite"));
+    try {
+      db.exec("pragma journal_mode=WAL; create table threads (id text, archived integer, source text); create table thread_spawn_edges (parent_thread_id text, child_thread_id text);");
+      const dir = path.join(home, "sessions", "2026", "10", "11"); await fs.mkdir(dir, { recursive: true });
+      for (const id of ["019db2be-b2b3-7e82-9e61-8c84b28ad291", "019db2be-b2b3-7e82-9e61-8c84b28ad292"]) {
+        await fs.writeFile(path.join(dir, `rollout-2026-10-11T00-00-00-${id}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id, cwd: "/repo" } }) + "\n");
+        db.exec(`insert into threads values ('${id}', 0, 'vscode'); insert into thread_spawn_edges values ('root', '${id}');`);
+        const found = await discoverCodexSessions(home, { includeSubAgents: true });
+        expect(found.some(session => session.id === id && session.subagent?.parentSessionId === "root")).toBe(true);
+      }
+    } finally { db.close(); await fs.rm(home, { recursive: true, force: true }); }
+  });
+
   it("parses session index entries", () => {
     expect(
       parseSessionIndexLine(

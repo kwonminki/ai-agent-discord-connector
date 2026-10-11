@@ -13,15 +13,24 @@ export interface CodexSessionIndexEntry {
   updatedAt: string;
 }
 
+export interface CodexSubagent {
+  parentSessionId: string;
+  name?: string;
+  agentPath?: string;
+  source: "codex" | "orca";
+}
+
 export interface CodexSessionMeta {
   id: string;
   cwd: string;
   forkedFromId?: string;
+  subagent?: CodexSubagent;
 }
 
 export interface DiscoveredCodexSession extends CodexSessionIndexEntry {
   cwdHint: string | null;
   forkedFromId?: string;
+  subagent?: CodexSubagent;
   goalStatus?: CodexSessionGoalStatus;
   contextPreview?: CodexSessionContextMessage[];
   realtimeEvents?: CodexSessionRealtimeEvent[];
@@ -66,11 +75,13 @@ interface CodexThreadState {
   archived: boolean;
   source: string | null;
   isSubAgent: boolean;
+  subagent?: CodexSubagent;
 }
 
 type SessionDetails = {
   cwdHint: string | null;
   forkedFromId?: string;
+  subagent?: CodexSubagent;
   contextPreview?: CodexSessionContextMessage[];
   realtimeEvents?: CodexSessionRealtimeEvent[];
 };
@@ -84,6 +95,8 @@ interface CachedSessionDetails {
 interface CachedThreadStates {
   mtimeMs: number;
   size: number;
+  walMtimeMs: number;
+  walSize: number;
   states: Map<string, CodexThreadState>;
 }
 
@@ -137,16 +150,29 @@ export function parseSessionIndexLine(line: string): CodexSessionIndexEntry {
   };
 }
 
+function parseSubagentSource(source: unknown): CodexSubagent | undefined {
+  try {
+    const value = typeof source === "string" ? JSON.parse(source) : source;
+    const spawn = value?.subagent?.thread_spawn;
+    if (typeof spawn?.parent_thread_id !== "string" || !spawn.parent_thread_id.trim()) return undefined;
+    return {
+      parentSessionId: spawn.parent_thread_id, source: "codex",
+      ...(typeof spawn.agent_nickname === "string" ? { name: spawn.agent_nickname } : {}),
+      ...(typeof spawn.agent_path === "string" ? { agentPath: spawn.agent_path } : {}),
+    };
+  } catch { return undefined; }
+}
+
 export function parseSessionMetaLine(line: string): CodexSessionMeta | null {
   let parsed: {
     type?: string;
-    payload?: { id?: string; cwd?: string; forked_from_id?: string };
+    payload?: { id?: string; cwd?: string; forked_from_id?: string; source?: unknown };
   };
 
   try {
     parsed = JSON.parse(line) as {
       type?: string;
-      payload?: { id?: string; cwd?: string; forked_from_id?: string };
+      payload?: { id?: string; cwd?: string; forked_from_id?: string; source?: unknown };
     };
   } catch {
     return null;
@@ -159,6 +185,7 @@ export function parseSessionMetaLine(line: string): CodexSessionMeta | null {
   return {
     id: parsed.payload.id,
     cwd: parsed.payload.cwd,
+    ...(parseSubagentSource(parsed.payload.source) ? { subagent: parseSubagentSource(parsed.payload.source) } : {}),
     ...(typeof parsed.payload.forked_from_id === "string" && parsed.payload.forked_from_id.length > 0
       ? { forkedFromId: parsed.payload.forked_from_id }
       : {}),
@@ -213,7 +240,7 @@ export async function discoverCodexSessions(
   const indexPath = path.join(codexHome, "session_index.jsonl");
   const indexEntries = await readSessionIndexEntries(indexPath);
 
-  if (indexEntries === null && (!options.includeSessionIds || options.includeSessionIds.length === 0)) {
+  if (!options.includeSubAgents && indexEntries === null && (!options.includeSessionIds || options.includeSessionIds.length === 0)) {
     return [];
   }
 
@@ -237,7 +264,16 @@ export async function discoverCodexSessions(
   const sessionFilesById = await findSessionFilesByIds(sessionsRoot, visibleEntries.map((entry) => entry.id));
   const explicitEntries: CodexSessionIndexEntry[] = [];
 
-  for (const sessionId of options.includeSessionIds ?? []) {
+  const candidates = new Set(options.includeSessionIds ?? []);
+  if (options.includeSubAgents) {
+    for (const [id, state] of threadStates) {
+      if (state.isSubAgent && !state.archived) {
+        candidates.add(id);
+        if (state.subagent && !threadStates.get(state.subagent.parentSessionId)?.archived) candidates.add(state.subagent.parentSessionId);
+      }
+    }
+  }
+  for (const sessionId of candidates) {
     if (visibleIds.has(sessionId) || archivedSessionIds.has(sessionId)) {
       continue;
     }
@@ -249,7 +285,12 @@ export async function discoverCodexSessions(
     }
 
     sessionFilesById.set(sessionId, sessionFile);
-    explicitEntries.push(await fallbackSessionIndexEntry(sessionFile, sessionId));
+    if (threadStates.get(sessionId)?.isSubAgent) {
+      const stats = await statIfExists(sessionFile);
+      explicitEntries.push({ id: sessionId, threadName: threadStates.get(sessionId)?.subagent?.name || "Codex subagent", updatedAt: new Date(stats?.mtimeMs ?? 0).toISOString() });
+    } else {
+      explicitEntries.push(await fallbackSessionIndexEntry(sessionFile, sessionId));
+    }
     visibleIds.add(sessionId);
   }
 
@@ -259,6 +300,7 @@ export async function discoverCodexSessions(
       return {
         ...entry,
         cwdHint: details.cwdHint,
+        ...(details.subagent ?? threadStates.get(entry.id)?.subagent ? { subagent: details.subagent ?? threadStates.get(entry.id)?.subagent } : {}),
         ...(details.forkedFromId ? { forkedFromId: details.forkedFromId } : {}),
         ...(goalStatuses.get(entry.id) ? { goalStatus: goalStatuses.get(entry.id) } : {}),
         ...(details.contextPreview ? { contextPreview: details.contextPreview } : {}),
@@ -440,6 +482,7 @@ async function readSessionDetailsFromFile(
   return {
     ...tailDetails,
     cwdHint: tailDetails.cwdHint ?? headIdentity.cwdHint,
+    subagent: tailDetails.subagent ?? headIdentity.subagent,
     ...(tailDetails.forkedFromId || headIdentity.forkedFromId
       ? { forkedFromId: tailDetails.forkedFromId ?? headIdentity.forkedFromId! }
       : {}),
@@ -455,6 +498,7 @@ function parseSessionDetailsText(
 
   return {
     cwdHint: identity.cwdHint,
+    ...(identity.subagent ? { subagent: identity.subagent } : {}),
     ...(identity.forkedFromId ? { forkedFromId: identity.forkedFromId } : {}),
     ...(options.includeContextPreview
       ? {
@@ -478,12 +522,13 @@ function parseSessionDetailsText(
 function parseSessionIdentityHints(
   sessionId: string,
   text: string,
-): Pick<SessionDetails, "cwdHint" | "forkedFromId"> {
+): Pick<SessionDetails, "cwdHint" | "forkedFromId" | "subagent"> {
   for (const line of text.split("\n").filter(Boolean)) {
     const meta = parseSessionMetaLine(line);
     if (meta?.id === sessionId) {
       return {
         cwdHint: meta.cwd,
+        ...(meta.subagent ? { subagent: meta.subagent } : {}),
         ...(meta.forkedFromId ? { forkedFromId: meta.forkedFromId } : {}),
       };
     }
@@ -505,6 +550,7 @@ function mergeSessionDetails(
 ): SessionDetails {
   return {
     cwdHint: appended.cwdHint ?? previous.cwdHint,
+    subagent: appended.subagent ?? previous.subagent,
     ...(appended.forkedFromId || previous.forkedFromId
       ? { forkedFromId: appended.forkedFromId ?? previous.forkedFromId! }
       : {}),
@@ -701,6 +747,22 @@ async function buildArchivedSessionIds(root: string): Promise<Set<string>> {
   return ids;
 }
 
+// Node 22+ ships SQLite; bare Linux servers often have no sqlite3 executable.
+// Older supported Node installations retain the existing CLI fallback.
+async function readSqliteRows(databasePath: string, queries: string[]): Promise<string> {
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      return queries.flatMap(query => database.prepare(query).all().map(row => Object.values(row).join(""))).join("\n");
+    } finally { database.close(); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ERR_UNKNOWN_BUILTIN_MODULE") throw error;
+    const { stdout } = await execFileAsync("sqlite3", ["-readonly", databasePath, queries.join("\n")], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    return stdout;
+  }
+}
+
 async function readCodexThreadStates(codexHome: string): Promise<Map<string, CodexThreadState>> {
   const databasePath = await findCodexStateDatabase(codexHome);
 
@@ -714,31 +776,27 @@ async function readCodexThreadStates(codexHome: string): Promise<Map<string, Cod
     return new Map();
   }
 
+  const walStats = await statIfExists(`${databasePath}-wal`);
+  const walMtimeMs = walStats?.mtimeMs ?? 0;
+  const walSize = walStats?.size ?? 0;
   const cached = threadStatesCache.get(databasePath);
 
-  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size && cached.walMtimeMs === walMtimeMs && cached.walSize === walSize) {
     return cached.states;
   }
 
   try {
-    const { stdout } = await execFileAsync(
-      "sqlite3",
-      [
-        databasePath,
-        [
-          `select 'thread' || char(31) || id || char(31) || archived || char(31) || source from threads;`,
-          `select 'edge' || char(31) || child_thread_id from thread_spawn_edges;`,
-        ].join("\n"),
-      ],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-    );
+    const stdout = await readSqliteRows(databasePath, [
+      `select 'thread' || char(31) || id || char(31) || archived || char(31) || source from threads;`,
+      `select 'edge' || char(31) || child_thread_id || char(31) || parent_thread_id from thread_spawn_edges;`,
+    ]);
 
     const states = parseCodexThreadStateRows(stdout);
 
     threadStatesCache.set(databasePath, {
       mtimeMs: stats.mtimeMs,
       size: stats.size,
-      states,
+      states, walMtimeMs, walSize,
     });
 
     return states;
@@ -778,14 +836,9 @@ async function readCodexGoalStatuses(codexHome: string): Promise<Map<string, Cod
   }
 
   try {
-    const { stdout } = await execFileAsync(
-      "sqlite3",
-      [
-        databasePath,
-        `select thread_id || char(31) || status from thread_goals;`,
-      ],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-    );
+    const stdout = await readSqliteRows(databasePath, [
+      `select thread_id || char(31) || status from thread_goals;`,
+    ]);
     const statuses = parseCodexGoalStatusRows(stdout);
 
     goalStatusesCache.set(databasePath, {
@@ -849,6 +902,7 @@ function parseCodexThreadStateRows(stdout: string): Map<string, CodexThreadState
       states.set(id, {
         archived: archived === "1",
         source,
+        subagent: parseSubagentSource(source),
         isSubAgent: source.trimStart().startsWith('{"subagent"'),
       });
       continue;
@@ -865,6 +919,7 @@ function parseCodexThreadStateRows(stdout: string): Map<string, CodexThreadState
         archived: previous?.archived ?? false,
         source: previous?.source ?? null,
         isSubAgent: true,
+        subagent: previous?.subagent ?? (fields[2] ? { source: "codex", parentSessionId: fields[2] } : undefined),
       });
     }
   }

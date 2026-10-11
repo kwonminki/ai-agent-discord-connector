@@ -410,7 +410,7 @@ export async function notifyCodexTaskCompletions(
   for (const session of input.sessions) {
     const sessionKey = normalizedSessionId(session.id);
 
-    if (ignoredSessionIds.has(sessionKey)) {
+    if (ignoredSessionIds.has(sessionKey) || (session.subagent && !state.sessionChannels.some(channel => channel.codexSessionId === session.id && channel.subagent))) {
       continue;
     }
 
@@ -430,6 +430,13 @@ export async function notifyCodexTaskCompletions(
 
     seenCompletionEvents.add(completionEventKey);
     const previous = notificationsBySession.get(sessionKey);
+    if (session.subagent && !previous && session.realtimeEvents?.filter(event => event.turnStatus).at(-1)?.turnStatus === "running") {
+      // A native child's fork history can contain the parent's old completion.
+      notificationsBySession.set(sessionKey, nextNotificationState({ session, eventKey: completionEvent.key }));
+      updatedNotificationSessionIds.add(sessionKey);
+      changed = true;
+      continue;
+    }
 
     if (hasPendingCodexForkReservation(state, session)) {
       // A freshly forked rollout contains copied historical task_complete
@@ -513,7 +520,7 @@ export async function notifyCodexTaskCompletions(
         intermediate,
       });
       const continuations = getAgentResultContinuationMessages(notification);
-      const operatorRoleIds = input.mentionRoleIds?.filter((roleId) => roleId.trim().length > 0) ?? [];
+      const operatorRoleIds = syncedChannel?.subagent || session.subagent ? [] : input.mentionRoleIds?.filter((roleId) => roleId.trim().length > 0) ?? [];
       const completionMentionRoleIds =
         syncedChannel?.discordDeliveryMode === "thread"
           ? operatorRoleIds
