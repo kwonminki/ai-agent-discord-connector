@@ -3,6 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { watchDiscordGateway } from "./discordGatewayWatchdog.js";
+
+vi.mock("./discordGatewayWatchdog.js", () => ({ watchDiscordGateway: vi.fn(() => vi.fn()) }));
 
 beforeEach(() => {
   delete process.env.CONNECT_MODE;
@@ -159,6 +162,7 @@ describe("bot entrypoint", () => {
       },
     );
     expect(login).toHaveBeenCalledWith("discord-token");
+    expect(watchDiscordGateway).toHaveBeenCalledWith({ login, once, on }, expect.any(Function));
   }, 15_000);
 
   it("starts the bot from a generated direct mode config", async () => {

@@ -294,8 +294,8 @@ export function createDiscordGuildSurface(
   }
 
   return {
-    async ensureSubagentContainer(parentChannelId) {
-      const cacheKey = `${guild.id}:${parentChannelId}`;
+    async ensureSubagentContainer(parentChannelId, computerDisplayName) {
+      const cacheKey = `${guild.id}:${parentChannelId}:${computerDisplayName ?? ""}`;
       const cached = subagentContainerCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return { id: cached.id };
       const parent = await guild.channels.fetch(parentChannelId);
@@ -304,6 +304,11 @@ export function createDiscordGuildSurface(
       const channels = await guild.channels.fetch();
       const matches = [...channels.values()].filter(channel => channel?.type === ChannelType.GuildText && channel.topic === topic);
       if (matches.length > 1) throw new Error("Duplicate subagent containers; refusing ambiguous routing.");
+      const categories = [...channels.values()].filter(channel => channel?.type === ChannelType.GuildCategory && channel.name === "subagents");
+      if (categories.length > 1) throw new Error("Duplicate subagents categories; refusing ambiguous routing.");
+      const category = categories[0] ?? await guild.channels.create({ name: "subagents", type: ChannelType.GuildCategory });
+      const name = (computerDisplayName ?? parent.name).trim().toLowerCase()
+        .replace(/[^0-9a-z가-힣ㄱ-ㅎㅏ-ㅣ_-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 100) || parent.name;
       const permissions = parent.permissionOverwrites.cache.map(overwrite => ({ id: overwrite.id, type: overwrite.type, allow: overwrite.allow, deny: overwrite.deny }));
       const existing = matches[0];
       if (existing?.type === ChannelType.GuildText) {
@@ -313,11 +318,15 @@ export function createDiscordGuildSurface(
             return original?.type === overwrite.type && original.allow.equals(overwrite.allow) && original.deny.equals(overwrite.deny);
           });
         if (!samePermissions) await existing.permissionOverwrites.set(permissions);
+        // Move the container, not its threads: their IDs, history and membership survive.
+        if (existing.parentId !== category.id || existing.name !== name) {
+          await existing.edit({ parent: category.id, name, lockPermissions: false });
+        }
         subagentContainerCache.set(cacheKey, { id: existing.id, expiresAt: Date.now() + 60_000 });
         return { id: existing.id };
       }
-      const channel = await guild.channels.create({ name: `${parent.name.slice(0, 80)}-subagents`, type: ChannelType.GuildText,
-        parent: parent.parentId, topic, permissionOverwrites: permissions });
+      const channel = await guild.channels.create({ name, type: ChannelType.GuildText,
+        parent: category.id, topic, permissionOverwrites: permissions });
       subagentContainerCache.set(cacheKey, { id: channel.id, expiresAt: Date.now() + 60_000 });
       return { id: channel.id };
     },

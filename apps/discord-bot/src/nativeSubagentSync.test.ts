@@ -9,6 +9,8 @@ import { createDirectSyncStateStore } from "./directState.js";
 import type { CreateDiscordMessageHandlerInput } from "./messageHandler.js";
 import { notifyCodexTaskCompletions } from "./codexTaskNotifications.js";
 
+vi.mock("./discordGatewayWatchdog.js", () => ({ watchDiscordGateway: vi.fn(() => vi.fn()) }));
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.resetModules();
@@ -27,7 +29,7 @@ it.each(["cli", "vscode", "appServer"])("discovers native children of %s parents
     const sessionsDir = path.join(home, "sessions", "2026", "10", "11");
     await mkdir(sessionsDir, { recursive: true });
     const childFile = path.join(sessionsDir, `rollout-2026-10-11T00-00-00-${childId}.jsonl`);
-    await writeFile(path.join(sessionsDir, `rollout-2026-10-11T00-00-00-${rootId}.jsonl`), line("session_meta", { id: rootId, cwd: home, source }));
+    await writeFile(path.join(sessionsDir, `rollout-2026-10-11T00-00-00-${rootId}.jsonl`), line("session_meta", { id: rootId, cwd: home, source }) + line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Review this project" }] }));
     await writeFile(childFile, line("session_meta", { id: childId, cwd: home, source: sourceMeta }) + line("event_msg", { type: "task_started", turn_id: "child-turn" }));
     await writeFile(path.join(home, "session_index.jsonl"), JSON.stringify({ id: rootId, thread_name: "Main task", updated_at: timestamp }) + "\n");
     await promisify(execFile)("sqlite3", [path.join(home, "state_5.sqlite"), `create table threads (id text primary key, archived integer, source text); create table thread_spawn_edges (parent_thread_id text, child_thread_id text); insert into threads values ('${rootId}', 0, '${source}'), ('${childId}', 0, '${JSON.stringify(sourceMeta)}'); insert into thread_spawn_edges values ('${rootId}', '${childId}');`]);
@@ -65,5 +67,15 @@ it.each(["cli", "vscode", "appServer"])("discovers native children of %s parents
     for (const [id, , options] of guild.sendTextMessage.mock.calls) { expect(id).toBe(child!.discordChannelId); expect(options).toBeUndefined(); }
     await hooks.syncTranscriptUpdates!({ guild, trigger: "realtime" });
     expect(guild.createThread).toHaveBeenCalledTimes(2);
+
+    // A permission/network failure in subagent organization must not hide the parent's output.
+    guild.ensureSubagentContainer.mockRejectedValueOnce(new Error("Missing Access"));
+    await appendFile(path.join(sessionsDir, `rollout-2026-10-11T00-00-00-${rootId}.jsonl`), line("response_item", { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Parent is still working" }] }));
+    const warning = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await hooks.syncTranscriptUpdates!({ guild, trigger: "realtime" });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("continuing session updates"), expect.any(Error));
+      expect(guild.sendTextMessage.mock.calls.some(([id, content]) => id === "parent" && JSON.stringify(content).includes("Parent is still working"))).toBe(true);
+    } finally { warning.mockRestore(); }
   } finally { await rm(home, { recursive: true, force: true }); }
 }, 15_000);

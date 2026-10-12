@@ -1,6 +1,7 @@
 import { createAgentGuidanceStore } from "./agentGuidanceStore.js";
 import { createDesktopSessionBridge } from "./desktopSessionBridge.js";
 import { createDesktopSessionClient } from "./desktopSessionClient.js";
+import { watchDiscordGateway } from "./discordGatewayWatchdog.js";
 import os from "node:os";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -504,7 +505,9 @@ export async function startBot(): Promise<void> {
           await syncSubagentThreads({ guild: input.guild, controlApi: controlApiClient, stateStore: directStateStore,
             sessions, adminChannelId: connectConfig.direct.channelId, computerId: connectConfig.direct.computerId,
             computerDisplayName: connectConfig.direct.computerDisplayName, defaultWorkspaceRoot: connectConfig.direct.workspaceRoot,
-            mentionRoleIds: connectConfig.discord.allowedRoleIds });
+            mentionRoleIds: connectConfig.discord.allowedRoleIds }).catch(error => {
+              console.error("discord-bot failed to group subagents; continuing session updates", error);
+            });
           return syncCodexSessionTranscriptUpdates({
             guild: input.guild,
             stateStore: directStateStore,
@@ -536,7 +539,9 @@ export async function startBot(): Promise<void> {
           await syncSubagentThreads({ guild: input.guild, controlApi: controlApiClient, stateStore: directStateStore,
             sessions, adminChannelId: connectConfig.direct.channelId, computerId: connectConfig.direct.computerId,
             computerDisplayName: connectConfig.direct.computerDisplayName, defaultWorkspaceRoot: connectConfig.direct.workspaceRoot,
-            mentionRoleIds: connectConfig.discord.allowedRoleIds });
+            mentionRoleIds: connectConfig.discord.allowedRoleIds }).catch(error => {
+              console.error("discord-bot failed to group subagents; continuing completion notifications", error);
+            });
           return notifyCodexTaskCompletions({
             guild: input.guild,
             controlApi: controlApiClient,
@@ -1337,7 +1342,13 @@ export async function startBot(): Promise<void> {
     locale,
   });
 
-  await client.login(token);
+  const stopGatewayWatchdog = watchDiscordGateway(client, () => process.exit(BOT_RELOAD_EXIT_CODE));
+  try {
+    await client.login(token);
+  } catch (error) {
+    stopGatewayWatchdog();
+    throw error;
+  }
 }
 
 export async function main(): Promise<void> {

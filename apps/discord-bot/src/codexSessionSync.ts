@@ -17,7 +17,7 @@ const DISCORD_SYNC_CONCURRENCY = 5;
 const MAX_DISCORD_THREAD_NAME_LENGTH = 100;
 
 export interface DiscordGuildSurface {
-  ensureSubagentContainer?(parentChannelId: string): Promise<{ id: string }>;
+  ensureSubagentContainer?(parentChannelId: string, computerDisplayName?: string): Promise<{ id: string }>;
   archiveThread?(id: string): Promise<void>;
   threadOperatorIds?(id: string, roleIds: string[]): Promise<string[]>;
   createCategory(input: { name: string }): Promise<{ id: string }>;

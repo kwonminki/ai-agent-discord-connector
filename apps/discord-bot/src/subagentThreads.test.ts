@@ -22,6 +22,14 @@ async function setup(old?: SyncedSessionChannelState) {
   return { guild, controlApi, stateStore, adminChannelId: "admin", computerId: "computer", computerDisplayName: "Computer", defaultWorkspaceRoot: "/repo", mentionRoleIds: ["operator-role"] };
 }
 describe("subagent thread grouping", () => {
+  it("migrates a historical container even without discoverable sessions", async () => {
+    const input = await setup({ ...rootChannel, codexSessionId: "old-child", discordChannelId: "old-thread", discordParentChannelId: "quiet", subagent: child("old-child").subagent });
+    await syncSubagentThreads({ ...input, sessions: [] });
+    expect(input.guild.ensureSubagentContainer).toHaveBeenCalledWith("admin", "Computer");
+    expect(input.guild.createThread).not.toHaveBeenCalled();
+    expect(input.guild.sendTextMessage).not.toHaveBeenCalled();
+    expect((await input.stateStore.read()).sessionChannels.find(row => row.codexSessionId === "old-child")?.discordChannelId).toBe("old-thread");
+  });
   it("groups native and Orca children, mentions only the index, and survives polls/restarts", async () => {
     const input = await setup();
     const sessions = [child("native"), child("orca", "orca")];

@@ -52,7 +52,10 @@ export async function syncSubagentThreads(input: {
         },
       ] }));
     };
-    let container: { id: string } | undefined;
+    // Migrate existing containers even when their child sessions are no longer discoverable.
+    let container = state.sessionChannels.some(channel => channel.subagent)
+      ? await input.guild.ensureSubagentContainer(input.adminChannelId, input.computerDisplayName)
+      : undefined;
     for (const session of input.sessions.filter(session => session.subagent)) {
       const rootId = subagentRoot(session.id, sessions);
       if (!rootId || rootId === session.id || state.archivedCodexSessionIds.includes(rootId) || state.archivedCodexSessionIds.includes(session.id)) continue;
@@ -84,7 +87,7 @@ export async function syncSubagentThreads(input: {
           `${users.map(id => `<@${id}>`).join(" ")}\n**서브 에이전트 목록 / Subagents**\n부모 작업 / Parent: <#${root.discordChannelId}>\n새 자식 작업을 아래에 알립니다. 이곳은 알림 전용입니다. 개별 링크에서 내용을 보고 대화할 수 있습니다.\nNotifications only. Open a child thread to read or reply.`, users));
         hub.contextPostedAt = new Date().toISOString(); await save(hub);
       }
-      container ??= await input.guild.ensureSubagentContainer(input.adminChannelId);
+      container ??= await input.guild.ensureSubagentContainer(input.adminChannelId, input.computerDisplayName);
       if (!child || child.discordParentChannelId !== container.id) {
         const old = child;
         const name = subagentThreadName(session);

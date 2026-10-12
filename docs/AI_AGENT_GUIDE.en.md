@@ -633,6 +633,12 @@ The Windows code path is covered by platform-independent tests, but native CLI p
 
 ## Troubleshooting
 
+### Gateway stays connecting after startup or a network interruption
+
+The Gateway checks Discord readiness and every shard's connection state every 10 seconds. Discord.js handles ordinary reconnect/resume. After 120 seconds continuously unavailable, the Gateway exits with code 42 so the Connector launcher, launchd or systemd restarts only that process. It does not restart the Worker or replay agent prompts. Run the Gateway under the documented supervisor; a manually launched standalone process needs to be started again after exit. Network errors log only an error code, not credentials or request contents. A healthy idle connection never triggers this watchdog.
+
+On macOS, inspect custom `NODE_OPTIONS` preloads and fixed `localPort` overrides if logs show `EADDRINUSE` on outbound HTTPS. Reusing a fixed source port after a restart can collide with an existing or closing connection. Verify ordinary OS-assigned outbound ports work before removing an old machine-local workaround. Subagent channel organization failures are logged separately and no longer block parent transcript or completion updates.
+
 ### Slash command is missing
 
 1. Confirm `applications.commands` scope.
