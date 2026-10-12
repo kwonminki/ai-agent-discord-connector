@@ -2,7 +2,7 @@
 
 The Direct Gateway groups native Codex children using parent/spawn metadata and Orca Codex workers using authoritative dispatch records plus verified local CLI ownership. Ordinary forks stay independent.
 
-Each parent gets an `agents` index thread. Existing parent-thread members with an allowed Operator role are invited and mentioned once; the configured role is used if no eligible members are found. New children are announced there without further mentions. The index and migration redirects cannot execute agent input or commands.
+Each parent gets an `agents` index thread. Existing parent-thread members with an allowed Operator role are invited and personally mentioned once; no mention is sent if no eligible members are found. Index and child threads never mention the Operator role. New children are announced there without further mentions. The index and migration redirects cannot execute agent input or commands.
 
 Individual children live in a separate `<computer-channel>-subagents` text channel with the original parent channel's permission overwrites. Child threads do not auto-invite users or mention them for progress, questions, or completion. Names use the native agent path/name or Orca task title. Existing flat threads keep their history and receive an archived redirect.
 

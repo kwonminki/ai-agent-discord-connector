@@ -81,7 +81,7 @@ export async function syncSubagentThreads(input: {
         const users = await input.guild.threadOperatorIds?.(root.discordChannelId, input.mentionRoleIds) ?? [];
         for (const user of users) await input.guild.addThreadMember?.(hub.discordChannelId, user);
         await input.guild.sendTextMessage(hub.discordChannelId, payload(`hub:${hub.discordChannelId}`,
-          `${users.map(id => `<@${id}>`).join(" ")}\n**서브 에이전트 목록 / Subagents**\n부모 작업 / Parent: <#${root.discordChannelId}>\n새 자식 작업을 아래에 알립니다. 이곳은 알림 전용입니다. 개별 링크에서 내용을 보고 대화할 수 있습니다.\nNotifications only. Open a child thread to read or reply.`, users), users.length ? undefined : { mentionRoleIds: input.mentionRoleIds });
+          `${users.map(id => `<@${id}>`).join(" ")}\n**서브 에이전트 목록 / Subagents**\n부모 작업 / Parent: <#${root.discordChannelId}>\n새 자식 작업을 아래에 알립니다. 이곳은 알림 전용입니다. 개별 링크에서 내용을 보고 대화할 수 있습니다.\nNotifications only. Open a child thread to read or reply.`, users));
         hub.contextPostedAt = new Date().toISOString(); await save(hub);
       }
       container ??= await input.guild.ensureSubagentContainer(input.adminChannelId);

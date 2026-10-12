@@ -28,17 +28,32 @@ describe("subagent thread grouping", () => {
     await Promise.all([syncSubagentThreads({ ...input, sessions }), syncSubagentThreads({ ...input, sessions })]);
     expect(input.guild.createThread).toHaveBeenCalledTimes(3);
     expect(input.guild.addThreadMember.mock.calls).toEqual([["thread-1", "operator-user"]]);
+    expect(input.guild.sendTextMessage.mock.calls[0]).toEqual(["thread-1", expect.objectContaining({ content: expect.stringContaining("<@operator-user>"), allowedMentions: { parse: [], users: ["operator-user"] } })]);
     const state = await input.stateStore.read();
     expect(state.sessionChannels.filter(row => row.subagent)).toHaveLength(2);
     expect(state.sessionChannels.find(row => row.codexSessionId === "native")).toMatchObject({ discordParentChannelId: "quiet", channelName: expect.stringContaining("review · Review database") });
     for (const [channel, message, options] of input.guild.sendTextMessage.mock.calls as unknown as Array<[string, { allowedMentions: { users?: string[] } }, unknown]>) {
-      if (channel !== "thread-1") { expect(message.allowedMentions.users).toEqual([]); expect(options).toBeUndefined(); }
+      expect(options).toBeUndefined();
+      if (channel !== "thread-1") expect(message.allowedMentions.users).toEqual([]);
     }
     input.guild.sendTextMessage.mockClear();
     await syncSubagentThreads({ ...input, stateStore: createDirectSyncStateStore(path.join(roots.at(-1)!, "state.json")), sessions: [...sessions, child("later")] });
     expect(input.guild.createThread).toHaveBeenCalledTimes(4);
     expect(input.guild.sendTextMessage.mock.calls.filter(call => call[0] === "thread-1")).toHaveLength(1);
     expect(input.guild.threadOperatorIds).toHaveBeenCalledTimes(1);
+  });
+  it.each(["no participants", "lookup unavailable"])("never falls back to an Operator role mention when %s", async (scenario) => {
+    const input = await setup();
+    input.guild.threadOperatorIds.mockResolvedValue([]);
+    const guild = scenario === "lookup unavailable" ? { ...input.guild, threadOperatorIds: undefined } : input.guild;
+    await syncSubagentThreads({ ...input, guild, sessions: [child("native"), child("orca", "orca")] });
+    expect(input.guild.sendTextMessage).toHaveBeenCalled();
+    expect(input.guild.addThreadMember).not.toHaveBeenCalled();
+    for (const [, message, options] of input.guild.sendTextMessage.mock.calls as unknown as Array<[string, { content: string; allowedMentions: unknown }, unknown]>) {
+      expect(message.allowedMentions).toEqual({ parse: [], users: [] });
+      expect(message.content).not.toContain("<@&");
+      expect(options).toBeUndefined();
+    }
   });
   it("moves an old flat binding while preserving its history and redirect", async () => {
     const input = await setup({ ...rootChannel, codexSessionId: "worker", discordChannelId: "old-worker", lastTranscriptMessageKey: "already-seen" });
