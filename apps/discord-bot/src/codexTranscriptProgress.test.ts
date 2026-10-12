@@ -105,6 +105,19 @@ describe("public progress for existing Desktop and Orca Codex sessions", () => {
     expect(guild.editTextMessage).not.toHaveBeenCalled();
   });
 
+  it("closes the previous app card while the connector streams the next turn", async () => {
+    await append(event("task_started")); await sync();
+    now += 1000;
+    await append(event("task_complete", { last_agent_message: "Done" }), event("task_started"), message("commentary", "Worker streams this"));
+    await sync({ ignoredSessionIds: [sessionId] });
+    expect(guild.editTextMessage).toHaveBeenCalledWith("channel", "sent-1", expect.objectContaining({ embeds: [expect.objectContaining({ description: "✅ 작업 완료" })] }));
+    expect(await stateStore.findSessionChannelByDiscordId("channel")).toMatchObject({ transcriptProgress: { status: "completed", messageId: "sent-1" } });
+    expect(guild.sendTextMessage).toHaveBeenCalledTimes(1);
+    await append(event("task_complete", { last_agent_message: "Worker answer" }));
+    await sync({ ignoredSessionIds: [sessionId] });
+    expect(guild.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("flushes pending public updates before the completion notification and delivers the final answer once", async () => {
     const notify = async () => notifyCodexTaskCompletions({ guild, stateStore, adminChannelId: "admin", sessions: await discoverCodexSessions(root, { includeRealtimeEvents: true, includeContextPreview: true }) });
     await notify();

@@ -13,6 +13,7 @@ export async function syncCodexTranscriptProgress(input: {
   channel: SyncedSessionChannelState;
   session: DiscoveredCodexSession;
   newEventKeys: Set<string>;
+  allowNewCard?: boolean;
   locale?: ConnectorLocale;
   now: number;
 }): Promise<{ progress: SyncedSessionChannelState["transcriptProgress"]; posted: number }> {
@@ -60,6 +61,10 @@ export async function syncCodexTranscriptProgress(input: {
     });
     previous = ended.progress;
   }
+
+  // A Worker may already stream the new turn, but an older transcript card
+  // still needs its completion reconciled.
+  if (input.allowNewCard === false && status === "running") return { progress: previous, posted: 0 };
 
   const en = input.locale === "en";
   const description = {

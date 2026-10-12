@@ -258,15 +258,16 @@ async function syncTranscriptUpdates(
       : [];
 
     let progress = channel.transcriptProgress;
+    const ignored = ignoredSessionIds.has(session.id);
     if (
       input.guild.sendTextMessage &&
-      input.postUpdates !== false &&
-      !ignoredSessionIds.has(session.id)
+      input.postUpdates !== false
     ) {
       try {
         const result = await syncCodexTranscriptProgress({
           guild: input.guild, channel, session,
           newEventKeys: new Set(newMessages.map(message => message.key)),
+          allowNewCard: !ignored,
           locale: input.locale, now: input.now?.() ?? Date.now(),
         });
         progress = result.progress;
@@ -275,7 +276,7 @@ async function syncTranscriptUpdates(
           changedChannels.set(channel.discordChannelId, { ...channel, transcriptProgress: progress });
           await persistChanges();
         }
-        for (const message of newMessages.filter(shouldMirrorTranscriptMessage)) {
+        for (const message of ignored ? [] : newMessages.filter(shouldMirrorTranscriptMessage)) {
           postedMessages += await postTranscriptDiscordMessage({ guild: input.guild, channel, message });
           changedChannels.set(channel.discordChannelId, { ...nextChannelState(channel, session, message.key), transcriptProgress: progress });
           await persistChanges();
