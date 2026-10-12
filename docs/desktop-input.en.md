@@ -20,7 +20,7 @@ The feed reads session records at a default interval of 3–5 seconds; high syst
 
 ## Requirements
 
-The Direct gateway and app must run on the **same computer, as the same user, with the same Codex home**. This implementation supports macOS/Linux user sockets, not Windows named pipes. The app must own the conversation. If the socket or owner is absent, existing connector routing continues.
+The Direct gateway and app must run on the **same computer, as the same user, with the same Codex home**. This implementation supports macOS/Linux user sockets, not Windows named pipes. The app must own the conversation. If the socket or owner is absent, existing connector routing continues. A stale socket that refuses the initial connection is also treated as unavailable, so a closed Desktop app cannot block ordinary Connector sessions. Failures after connecting or sending input still stop without falling through to another writer.
 
 Update the source, install dependencies, and restart only the **gateway**. Forwarding is enabled by default; the worker and app need not restart. Set `CONNECT_DESKTOP_INPUT_ENABLED=false` in the gateway environment to disable it.
 

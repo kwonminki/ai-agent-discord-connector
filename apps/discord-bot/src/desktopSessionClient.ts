@@ -82,11 +82,18 @@ export function createDesktopSessionClient(options: { codexHome?: string; timeou
         }
       }
       try {
-        await new Promise<void>((resolve, reject) => {
+        const connected = await new Promise<boolean>((resolve, reject) => {
           const timer = setTimeout(() => { reject(new Error("Desktop connection timed out.")); close(); }, timeoutMs);
-          socket.once("connect", () => { clearTimeout(timer); resolve(); });
-          socket.once("error", () => { clearTimeout(timer); reject(new Error("Desktop connection unavailable.")); });
+          socket.once("connect", () => { clearTimeout(timer); resolve(true); });
+          socket.once("error", (error: NodeJS.ErrnoException) => {
+            clearTimeout(timer);
+            // A crashed/closed app can leave its socket behind. Before any
+            // request is sent, refusal or disappearance means no Desktop owner.
+            if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolve(false);
+            else reject(new Error("Desktop connection unavailable."));
+          });
         });
+        if (!connected) { close(); return null; }
         const init = await request("initialize", { clientType: "discord-connector" });
         success(init, "initialize");
         if (typeof init.result?.clientId !== "string") throw new Error("Unsupported Desktop initialization response.");

@@ -1,9 +1,12 @@
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { unlinkSync } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDesktopSessionClient } from "./desktopSessionClient.js";
+import { createDesktopSessionBridge } from "./desktopSessionBridge.js";
+import { createDiscordMessageHandler } from "./messageHandler.js";
 
 const thread = "01a0ceec-c225-71a2-9204-b4d5819c004d";
 let home: string, server: net.Server;
@@ -38,6 +41,50 @@ afterEach(async () => { for (const socket of sockets) socket.destroy(); await ne
 const client = (timeoutMs = 1000) => createDesktopSessionClient({ codexHome: home, timeoutMs });
 
 describe("Desktop same-session IPC", () => {
+  it("ignores a stale socket and resumes the same linked session through the worker", async () => {
+    const socketPath = path.join(home, "ipc", "ipc.sock");
+    const moved = path.join(home, "ipc", "stale.sock");
+    // Closing a Node server unlinks its original path. Move it first to
+    // reproduce the socket left behind when a Desktop process crashes.
+    await rename(socketPath, moved);
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rename(moved, socketPath);
+    expect((await lstat(socketPath)).isSocket()).toBe(true);
+    expect(await client().open(thread)).toBeNull();
+
+    const submitCodexPrompt = vi.fn().mockResolvedValue({ jobId: "job", result: { status: "completed", finalMessage: "Done", sessionId: thread } });
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const handler = createDiscordMessageHandler({
+      desktopBridge: createDesktopSessionBridge({ client: client(), file: path.join(home, "receipts.json") }),
+      resolveChannelContext: async () => ({ channelMode: "session-linked", codexSessionId: thread, allowedRoleIds: ["operator"], computerId: "host", computerDisplayName: "Host", workspaceDisplayName: "Work", workspaceRoot: "/work", cwd: "/work", timeoutMs: 3000 }),
+      submitCodexPrompt, submitCommandJob: vi.fn(), updateChannelCwd: vi.fn(), recordCommandAudit: vi.fn(),
+    });
+    await handler({ content: "Continue here", authorBot: false, userId: "user", channelId: "channel", roleIds: ["operator"], messageId: "id", reply });
+    expect(submitCodexPrompt).toHaveBeenCalledTimes(1);
+    expect(submitCodexPrompt.mock.calls[0]?.[0]).toMatchObject({ payload: { sessionId: thread, prompt: "Continue here" } });
+    expect(submitCodexPrompt.mock.calls[0]?.[0].payload.forkSession).not.toBe(true);
+    expect(JSON.stringify(reply.mock.calls)).not.toContain("Desktop connection unavailable");
+    expect(requests).toHaveLength(0);
+    expect((await lstat(socketPath)).isSocket()).toBe(true);
+  });
+
+  it("ignores a socket removed between its ownership check and connection", async () => {
+    const connect = net.createConnection;
+    const spy = vi.spyOn(net, "createConnection").mockImplementationOnce((...args: any[]) => {
+      unlinkSync(path.join(home, "ipc", "ipc.sock"));
+      return (connect as (...args: any[]) => net.Socket)(...args);
+    });
+    try { expect(await client().open(thread)).toBeNull(); }
+    finally { spy.mockRestore(); }
+    expect(requests).toHaveLength(0);
+  });
+
+  it("still rejects a connected Desktop that fails to initialize", async () => {
+    respond = () => undefined;
+    await expect(client(50).open(thread)).rejects.toThrow("timed out");
+    expect(requests.map(x => x.method)).toEqual(["initialize"]);
+  });
+
   it("discovers the exact owner and steers the existing turn with literal input", async () => {
     const session = await client().open(thread);
     expect(await session!.send('answer "2"\n$(literal)', "discord-id")).toBe("steered"); session!.close();
