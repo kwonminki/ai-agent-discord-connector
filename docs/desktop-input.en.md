@@ -12,6 +12,8 @@ For Codex work started in the ChatGPT/Codex desktop app, **reply with an ordinar
 
 Realtime sync (the default) shows a `Thinking / working` card and public intermediate updates from the **same Codex session** in Desktop or Orca. The card changes on completion or interruption. Pending public updates are delivered before the final answer, and long updates are split for Discord. Private reasoning and tool bodies are excluded from this feed.
 
+Internal conversation compaction immediately after an answer does not reopen the thinking card. New input or evidence of actual agent work starts the next card, while the previous card retains its terminal status even when both turns are observed in one poll.
+
 After replying from Discord, continue typing in the original ChatGPT/Codex app or Orca terminal. The session, context, workspace, and app/CLI settings remain in place, and later turns keep reporting to the same Discord thread. The connector does not stop the original process or replace its writer.
 
 The feed reads session records at a default interval of 3–5 seconds; high system load or connection errors can delay it. Very short tasks may finish before a thinking card appears. After 30 minutes without a new status record, the card asks you to check the app rather than claiming the task has stopped. Persisted message IDs and cursors survive Gateway restarts. Selecting `on-chat` sync mode disables automatic progress updates too.

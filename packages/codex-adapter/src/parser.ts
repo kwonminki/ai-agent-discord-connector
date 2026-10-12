@@ -1057,6 +1057,15 @@ function parseRealtimeEventLine(line: string, messageMaxChars: number): CodexSes
     ? parsed.timestamp
     : null;
 
+  // A standalone compaction emits task_started too. A turn context confirms
+  // actual agent work without exposing its model, instructions, or settings.
+  if (parsed.type === "turn_context") {
+    return {
+      key: hashSessionEventLine(line), kind: "status", text: "작업 진행",
+      ...(timestamp ? { timestamp } : {}),
+    };
+  }
+
   if (parsed.type === "response_item" && parsed.payload.type === "message") {
     if (parsed.payload.role === "user") {
       const text = normalizeUserContextText(extractContentText(parsed.payload.content));

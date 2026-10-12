@@ -17,23 +17,49 @@ export async function syncCodexTranscriptProgress(input: {
   now: number;
 }): Promise<{ progress: SyncedSessionChannelState["transcriptProgress"]; posted: number }> {
   const { channel, session, guild } = input;
-  const previous = channel.transcriptProgress?.sessionId === session.id ? channel.transcriptProgress : undefined;
+  let previous = channel.transcriptProgress?.sessionId === session.id ? channel.transcriptProgress : undefined;
   const events = session.realtimeEvents ?? [];
-  const lifecycle = [...events].reverse().find(event => event.turnStatus) ??
+  let lifecycleIndex = -1;
+  let terminalIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (!events[index].turnStatus) continue;
+    if (lifecycleIndex < 0) { lifecycleIndex = index; continue; }
+    if (events[index].turnStatus !== "running") { terminalIndex = index; break; }
+  }
+  let lifecycle = events[lifecycleIndex] ??
     (previous && (previous.status === "running" || previous.status === "stale")
       ? { key: previous.eventKey, turnStatus: "running" as const, text: "" }
       : undefined);
   if (!lifecycle) return { progress: previous, posted: 0 };
+
+  // Codex can start a silent compaction turn immediately after the answer.
+  // Keep the terminal state until input, turn context, or public work follows.
+  if (lifecycle.turnStatus === "running" && terminalIndex >= 0 &&
+      !events.slice(lifecycleIndex + 1).some(event => !event.turnStatus)) {
+    lifecycle = events[terminalIndex];
+  }
 
   const lastAt = Date.parse(events.at(-1)?.timestamp ?? session.updatedAt);
   const stale = !Number.isFinite(lastAt) || input.now - lastAt > TRANSCRIPT_PROGRESS_STALE_MS;
   const status = lifecycle.turnStatus === "running" && stale ? "stale" : lifecycle.turnStatus!;
   // Baseline old history silently. Existing cards may still be reconciled after
   // a Gateway restart or after the transcript cursor advances elsewhere.
-  if (!previous && (status !== "running" || !input.newEventKeys.has(lifecycle.key))) {
+  const hasNewActivity = events.slice(lifecycleIndex).some(event => input.newEventKeys.has(event.key));
+  if (!previous && (status !== "running" || !hasNewActivity)) {
     return { progress: undefined, posted: 0 };
   }
   if (previous?.eventKey === lifecycle.key && previous.status === status) return { progress: previous, posted: 0 };
+
+  // A poll may see the end of one turn and the start of the next together.
+  // Finish the old card before allocating the next turn's card.
+  if (status === "running" && terminalIndex >= 0 &&
+      (previous?.status === "running" || previous?.status === "stale") &&
+      events.findIndex(event => event.key === previous!.eventKey) < terminalIndex) {
+    const ended = await syncCodexTranscriptProgress({
+      ...input, session: { ...session, realtimeEvents: events.slice(0, terminalIndex + 1) },
+    });
+    previous = ended.progress;
+  }
 
   const en = input.locale === "en";
   const description = {

@@ -41,6 +41,70 @@ beforeEach(async () => {
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
 describe("public progress for existing Desktop and Orca Codex sessions", () => {
+  it("keeps completion visible while a separate compaction-only turn runs after the answer", async () => {
+    await append(event("task_started")); await sync();
+    now += 1000;
+    await append(message("final_answer", "Done"), event("task_complete", { last_agent_message: "Done" }), event("task_started"));
+    await sync();
+    expect(await stateStore.findSessionChannelByDiscordId("channel")).toMatchObject({ transcriptProgress: { status: "completed", messageId: "sent-1" } });
+    expect(guild.editTextMessage.mock.calls.at(-1)?.[2].embeds[0].description).toBe("✅ 작업 완료");
+    stateStore = createDirectSyncStateStore(statePath);
+    await sync();
+    await append({ type: "compacted", payload: { message: "PRIVATE SUMMARY" } }, event("task_complete", { last_agent_message: null }));
+    await sync();
+    expect(guild.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(guild.sendTextMessage.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  it("repairs a persisted thinking card from a compaction-only turn after restart", async () => {
+    await append(event("task_complete", { last_agent_message: "Done" }));
+    now += 1000;
+    await append(event("task_started"));
+    const sessions = await discoverCodexSessions(root, { includeRealtimeEvents: true });
+    const startKey = sessions[0].realtimeEvents!.at(-1)!.key;
+    await stateStore.update(state => ({ ...state, sessionChannels: state.sessionChannels.map(channel => ({ ...channel,
+      lastTranscriptMessageKey: startKey,
+      transcriptProgress: { sessionId, eventKey: startKey, status: "running", messageId: "old-card" },
+    })) }));
+    stateStore = createDirectSyncStateStore(statePath);
+    await sync();
+    expect(guild.editTextMessage).toHaveBeenCalledWith("channel", "old-card", expect.objectContaining({ embeds: [expect.objectContaining({ description: "✅ 작업 완료" })] }));
+    expect(guild.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["context", "user", "commentary"])("starts a real follow-up after %s arrives on a later poll", async (evidence) => {
+    await append(event("task_complete", { last_agent_message: "Done" })); await sync();
+    now += 1000;
+    await append(event("task_started")); await sync();
+    expect(guild.sendTextMessage).not.toHaveBeenCalled();
+    const activity = evidence === "context"
+      ? { type: "turn_context", payload: { turn_id: "follow-up", cwd: "/repo", model: "PRIVATE SETTINGS" } }
+      : evidence === "user"
+        ? { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] } }
+        : message("commentary", "Continuing");
+    await append(activity); await sync();
+    expect(guild.sendTextMessage.mock.calls[0]?.[1]).toMatchObject({ embeds: [expect.objectContaining({ description: "⏳ 생각 중 · 작업 진행 중…" })] });
+    expect(JSON.stringify(guild.sendTextMessage.mock.calls)).not.toContain("PRIVATE SETTINGS");
+    expect(await stateStore.findSessionChannelByDiscordId("channel")).toMatchObject({ transcriptProgress: { status: "running" } });
+  });
+
+  it("finishes the old card before a real next turn observed in the same poll", async () => {
+    await append(event("task_started")); await sync();
+    now += 1000;
+    await append(event("task_complete", { last_agent_message: "Done" }), event("task_started"), { type: "turn_context", payload: { turn_id: "next" } });
+    await sync();
+    expect(guild.editTextMessage).toHaveBeenCalledWith("channel", "sent-1", expect.objectContaining({ embeds: [expect.objectContaining({ description: "✅ 작업 완료" })] }));
+    expect(await stateStore.findSessionChannelByDiscordId("channel")).toMatchObject({ transcriptProgress: { status: "running", messageId: "sent-2" } });
+  });
+
+  it("keeps an unfinished task running during in-turn compaction", async () => {
+    await append(event("task_started")); await sync();
+    await append({ type: "compacted", payload: { message: "PRIVATE SUMMARY" } }); await sync();
+    expect(await stateStore.findSessionChannelByDiscordId("channel")).toMatchObject({ transcriptProgress: { status: "running", messageId: "sent-1" } });
+    expect(guild.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(guild.editTextMessage).not.toHaveBeenCalled();
+  });
+
   it("flushes pending public updates before the completion notification and delivers the final answer once", async () => {
     const notify = async () => notifyCodexTaskCompletions({ guild, stateStore, adminChannelId: "admin", sessions: await discoverCodexSessions(root, { includeRealtimeEvents: true, includeContextPreview: true }) });
     await notify();
