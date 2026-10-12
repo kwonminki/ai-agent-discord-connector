@@ -491,6 +491,7 @@ export async function startBot(): Promise<void> {
           const sessions = await listDirectCodexSessions?.({
             activeOnly: false,
             includeExecSessions: true,
+            includeSubAgents: true,
             includeSessionIds: linkedSessionIds,
           });
 
@@ -498,6 +499,12 @@ export async function startBot(): Promise<void> {
             throw new Error("Direct Codex session listing is not connected.");
           }
 
+          // Discover children while the parent is still working, without
+          // waiting for the slower completion notification poll.
+          await syncSubagentThreads({ guild: input.guild, controlApi: controlApiClient, stateStore: directStateStore,
+            sessions, adminChannelId: connectConfig.direct.channelId, computerId: connectConfig.direct.computerId,
+            computerDisplayName: connectConfig.direct.computerDisplayName, defaultWorkspaceRoot: connectConfig.direct.workspaceRoot,
+            mentionRoleIds: connectConfig.discord.allowedRoleIds });
           return syncCodexSessionTranscriptUpdates({
             guild: input.guild,
             stateStore: directStateStore,
