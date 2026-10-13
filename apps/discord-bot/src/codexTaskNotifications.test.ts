@@ -102,6 +102,28 @@ describe("notifyCodexTaskCompletions", () => {
     } finally { await rm(tempRoot, { recursive: true, force: true }); }
   });
 
+  it("preserves created Orca threads on partial failure without announcing historical completions on retry", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "orca-auto-retry-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const createThread = vi.fn().mockResolvedValueOnce({ id: "first-thread" })
+      .mockRejectedValueOnce(new Error("Discord unavailable")).mockResolvedValue({ id: "second-thread" });
+    const sendTextMessage = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      guild: { createThread, sendTextMessage }, stateStore, adminChannelId: "admin", computerId: "computer",
+      controlApi: { createManagedChannel: vi.fn().mockResolvedValue({}), linkCodexSession: vi.fn().mockResolvedValue({}) },
+      activeOrcaSessionIds: ["first", "second"],
+      sessions: [session({ id: "first" }), session({ id: "second" }), session({ id: "old", completionKey: "old-complete" })],
+    };
+    try {
+      await expect(notifyCodexTaskCompletions(input)).rejects.toThrow("Discord unavailable");
+      expect((await stateStore.read()).taskCompletionNotificationsInitializedAt).toBeNull();
+      await notifyCodexTaskCompletions(input);
+      expect(createThread).toHaveBeenCalledTimes(3);
+      expect(sendTextMessage).not.toHaveBeenCalled();
+      expect((await stateStore.read()).sessionChannels).toHaveLength(2);
+    } finally { await rm(tempRoot, { recursive: true, force: true }); }
+  });
+
   it("baselines existing completed sessions without posting old notifications", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-task-notifications-"));
     const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));

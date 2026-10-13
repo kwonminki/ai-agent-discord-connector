@@ -366,7 +366,7 @@ export async function notifyCodexTaskCompletions(
   let notifiedSessions = 0;
   let changed = false;
 
-  const persistState = async () => {
+  const persistState = async (initializeNotifications = true) => {
     await input.stateStore.update((latestState) => {
       const mergedNotifications = new Map(
         latestState.taskCompletionNotifications.map((notification) => [
@@ -396,8 +396,9 @@ export async function notifyCodexTaskCompletions(
         ...latestState,
         sessionChannels,
         taskCompletionNotificationsInitializedAt:
-          latestState.taskCompletionNotificationsInitializedAt ?? now,
-        taskCompletionNotificationScope: TASK_COMPLETION_NOTIFICATION_SCOPE,
+          latestState.taskCompletionNotificationsInitializedAt ?? (initializeNotifications ? now : null),
+        taskCompletionNotificationScope: initializeNotifications
+          ? TASK_COMPLETION_NOTIFICATION_SCOPE : latestState.taskCompletionNotificationScope,
         taskCompletionNotifications: [...mergedNotifications.values()],
         discordRequestedCodexSessionIds: [],
         discordRequestedCodexSessionRequests:
@@ -426,7 +427,8 @@ export async function notifyCodexTaskCompletions(
       });
       if (ensured.created && ensured.channel) {
         replacementThreadsBySession.set(sessionKey, ensured.channel);
-        await persistState();
+        // A partial discovery failure must not mark old completions as baselined.
+        await persistState(false);
       }
     }
   }
