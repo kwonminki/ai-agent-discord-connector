@@ -150,15 +150,20 @@ export function parseSessionIndexLine(line: string): CodexSessionIndexEntry {
   };
 }
 
-function parseSubagentSource(source: unknown): CodexSubagent | undefined {
+function parseSubagentSource(source: unknown, parentThreadId?: unknown): CodexSubagent | undefined {
   try {
     const value = typeof source === "string" ? JSON.parse(source) : source;
+    if (!value?.subagent) return undefined;
     const spawn = value?.subagent?.thread_spawn;
-    if (typeof spawn?.parent_thread_id !== "string" || !spawn.parent_thread_id.trim()) return undefined;
+    // Internal agents such as Guardian use source.subagent.other and store the
+    // parent in session_meta itself, without a thread_spawn_edges database row.
+    const parent = spawn?.parent_thread_id ?? parentThreadId;
+    if (typeof parent !== "string" || !parent.trim()) return undefined;
+    const name = spawn?.agent_nickname ?? (value.subagent.other === "guardian" ? "Guardian review" : undefined);
     return {
-      parentSessionId: spawn.parent_thread_id, source: "codex",
-      ...(typeof spawn.agent_nickname === "string" ? { name: spawn.agent_nickname } : {}),
-      ...(typeof spawn.agent_path === "string" ? { agentPath: spawn.agent_path } : {}),
+      parentSessionId: parent, source: "codex",
+      ...(typeof name === "string" ? { name } : {}),
+      ...(typeof spawn?.agent_path === "string" ? { agentPath: spawn.agent_path } : {}),
     };
   } catch { return undefined; }
 }
@@ -166,13 +171,13 @@ function parseSubagentSource(source: unknown): CodexSubagent | undefined {
 export function parseSessionMetaLine(line: string): CodexSessionMeta | null {
   let parsed: {
     type?: string;
-    payload?: { id?: string; cwd?: string; forked_from_id?: string; source?: unknown };
+    payload?: { id?: string; cwd?: string; forked_from_id?: string; parent_thread_id?: unknown; source?: unknown };
   };
 
   try {
     parsed = JSON.parse(line) as {
       type?: string;
-      payload?: { id?: string; cwd?: string; forked_from_id?: string; source?: unknown };
+      payload?: { id?: string; cwd?: string; forked_from_id?: string; parent_thread_id?: unknown; source?: unknown };
     };
   } catch {
     return null;
@@ -182,10 +187,11 @@ export function parseSessionMetaLine(line: string): CodexSessionMeta | null {
     return null;
   }
 
+  const subagent = parseSubagentSource(parsed.payload.source, parsed.payload.parent_thread_id);
   return {
     id: parsed.payload.id,
     cwd: parsed.payload.cwd,
-    ...(parseSubagentSource(parsed.payload.source) ? { subagent: parseSubagentSource(parsed.payload.source) } : {}),
+    ...(subagent ? { subagent } : {}),
     ...(typeof parsed.payload.forked_from_id === "string" && parsed.payload.forked_from_id.length > 0
       ? { forkedFromId: parsed.payload.forked_from_id }
       : {}),

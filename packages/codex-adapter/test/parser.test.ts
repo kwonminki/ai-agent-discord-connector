@@ -34,6 +34,16 @@ async function createCodexGoalsDatabase(codexHome: string, sql: string) {
 }
 
 describe("codex parser", () => {
+  it.each([false, true])("recognizes Guardian's top-level parent with string source: %s", (stringSource) => {
+    const source = { subagent: { other: "guardian" } };
+    const meta = { id: "guardian", cwd: "/repo", parent_thread_id: "root", source: stringSource ? JSON.stringify(source) : source };
+    const parse = (payload: unknown) => parseSessionMetaLine(JSON.stringify({ type: "session_meta", payload }));
+    expect(parse(meta)?.subagent).toEqual({ source: "codex", parentSessionId: "root", name: "Guardian review" });
+    expect(parse({ ...meta, parent_thread_id: undefined })?.subagent).toBeUndefined();
+    expect(parse({ ...meta, parent_thread_id: 123 })?.subagent).toBeUndefined();
+    expect(parse({ ...meta, source: "cli", title: "Guardian review", forked_from_id: "root" })?.subagent).toBeUndefined();
+  });
+
   it("discovers unindexed native children and preserves their parent through appended events", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-subagent-"));
     const id = "019db2be-b2b3-7e82-9e61-8c84b28ad289";

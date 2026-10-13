@@ -17,23 +17,27 @@ afterEach(() => {
   for (const module of ["./connectConfig.js", "./directState.js", "./directControlClient.js", "./discordClient.js", "./messageHandler.js"]) vi.doUnmock(module);
 });
 
-it.each(["cli", "vscode", "appServer"])("discovers native children of %s parents during realtime sync without Orca", async (source) => {
+it.each([
+  { source: "cli", guardian: false }, { source: "vscode", guardian: false },
+  { source: "appServer", guardian: false }, { source: "vscode", guardian: true },
+])("discovers children of $source parents (Guardian: $guardian) during realtime sync without Orca", async ({ source, guardian }) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "native-discord-"));
   const rootId = "019db2be-b2b3-7e82-9e61-8c84b28ad280";
   const childId = "019db2be-b2b3-7e82-9e61-8c84b28ad281";
   const timestamp = new Date().toISOString();
   const stateStore = createDirectSyncStateStore(path.join(home, "discord-state.json"));
-  const sourceMeta = { subagent: { thread_spawn: { parent_thread_id: rootId, agent_nickname: "Noether", agent_path: "/root/review" } } };
+  const sourceMeta = guardian ? { subagent: { other: "guardian" } } : { subagent: { thread_spawn: { parent_thread_id: rootId, agent_nickname: "Noether", agent_path: "/root/review" } } };
   const line = (type: string, payload: unknown) => JSON.stringify({ timestamp, type, payload }) + "\n";
   try {
     const sessionsDir = path.join(home, "sessions", "2026", "10", "11");
     await mkdir(sessionsDir, { recursive: true });
     const childFile = path.join(sessionsDir, `rollout-2026-10-11T00-00-00-${childId}.jsonl`);
     await writeFile(path.join(sessionsDir, `rollout-2026-10-11T00-00-00-${rootId}.jsonl`), line("session_meta", { id: rootId, cwd: home, source }) + line("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Review this project" }] }));
-    await writeFile(childFile, line("session_meta", { id: childId, cwd: home, source: sourceMeta }) + line("event_msg", { type: "task_started", turn_id: "child-turn" }));
+    await writeFile(childFile, line("session_meta", { id: childId, cwd: home, source: sourceMeta, ...(guardian ? { parent_thread_id: rootId } : {}) }) + line("event_msg", { type: "task_started", turn_id: "child-turn" }));
     await writeFile(path.join(home, "session_index.jsonl"), JSON.stringify({ id: rootId, thread_name: "Main task", updated_at: timestamp }) + "\n");
-    await promisify(execFile)("sqlite3", [path.join(home, "state_5.sqlite"), `create table threads (id text primary key, archived integer, source text); create table thread_spawn_edges (parent_thread_id text, child_thread_id text); insert into threads values ('${rootId}', 0, '${source}'), ('${childId}', 0, '${JSON.stringify(sourceMeta)}'); insert into thread_spawn_edges values ('${rootId}', '${childId}');`]);
+    await promisify(execFile)("sqlite3", [path.join(home, "state_5.sqlite"), `create table threads (id text primary key, archived integer, source text); create table thread_spawn_edges (parent_thread_id text, child_thread_id text); insert into threads values ('${rootId}', 0, '${source}'), ('${childId}', 0, '${JSON.stringify(sourceMeta)}'); ${guardian ? "" : `insert into thread_spawn_edges values ('${rootId}', '${childId}');`}`]);
     await stateStore.update(state => ({ ...state, transcriptSyncMode: "realtime", sessionChannels: [{ codexSessionId: rootId, threadName: "Main task", updatedAt: timestamp, cwd: home, workspaceRoot: home, workspaceDisplayName: "repo", discordCategoryId: null, discordChannelId: "parent", discordParentChannelId: "admin", discordDeliveryMode: "thread", channelName: "Main task", computerId: "pc", workspaceId: "workspace" }] }));
+    if (guardian) await stateStore.update(state => ({ ...state, sessionChannels: [...state.sessionChannels, { ...state.sessionChannels[0], codexSessionId: childId, discordChannelId: "old-guardian", channelName: "Guardian review", threadName: "Guardian review", lastTranscriptMessageKey: "already-seen" }] }));
     const listCodexSessions = vi.fn(async (options) => ({ result: await discoverCodexSessions(home, { ...options, includeRealtimeEvents: true, includeContextPreview: true }) }));
     const controlApi = { listCodexSessions, createCategoryMapping: vi.fn(), createManagedChannel: vi.fn(), linkCodexSession: vi.fn() };
     const createHandler = vi.fn((_input: CreateDiscordMessageHandlerInput) => Object.assign(async () => {}, { drainRestoredMessages() {} }));
@@ -47,10 +51,14 @@ it.each(["cli", "vscode", "appServer"])("discovers native children of %s parents
     await startBot();
     const hooks = createHandler.mock.calls[0]?.[0] as unknown as CreateDiscordMessageHandlerInput;
     let threadId = 0;
-    const guild = { createCategory: vi.fn(), createTextChannel: vi.fn(), createThread: vi.fn(async () => ({ id: `thread-${++threadId}` })), ensureSubagentContainer: vi.fn(async () => ({ id: "quiet" })), sendTextMessage: vi.fn(async (_id: string, _content: unknown, _options?: unknown) => ({ id: "message" })), editTextMessage: vi.fn() };
+    const guild = { createCategory: vi.fn(), createTextChannel: vi.fn(), createThread: vi.fn(async () => ({ id: `thread-${++threadId}` })), archiveThread: vi.fn(), ensureSubagentContainer: vi.fn(async () => ({ id: "quiet" })), sendTextMessage: vi.fn(async (_id: string, _content: unknown, _options?: unknown) => ({ id: "message" })), editTextMessage: vi.fn() };
     await hooks.syncTranscriptUpdates!({ guild, trigger: "realtime" });
     const child = (await stateStore.read()).sessionChannels.find(channel => channel.codexSessionId === childId);
-    expect(child).toMatchObject({ discordParentChannelId: "quiet", subagentRootSessionId: rootId, channelName: "review · Noether · 8c84b28ad281" });
+    expect(child).toMatchObject({ discordParentChannelId: "quiet", subagentRootSessionId: rootId, channelName: guardian ? "Guardian review · 8c84b28ad281" : "review · Noether · 8c84b28ad281" });
+    if (guardian) {
+      expect((await stateStore.read()).sessionChannels.find(row => row.discordChannelId === "old-guardian")).toMatchObject({ codexSessionId: null, channelPurpose: "subagent-redirect", redirectChannelId: child!.discordChannelId, lastTranscriptMessageKey: "already-seen" });
+      expect(guild.archiveThread).toHaveBeenCalledWith("old-guardian");
+    }
     expect(await hooks.resolveSubagentParentChannel!(rootId)).toBe("parent");
     expect(guild.createThread).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(guild.sendTextMessage.mock.calls)).toContain("생각 중");

@@ -1,5 +1,7 @@
 # Subagent threads
 
+Codex `Guardian review` sessions are included. The connector identifies them through `source.subagent.other = guardian` and the session metadata's `parent_thread_id`, never by channel name alone. Existing flat Guardian threads retain their history and a redirect before being archived; subsequent updates appear in a `Guardian review · session ID` thread under the computer's channel in `subagents`.
+
 The Direct Gateway groups native Codex children using parent/spawn metadata and Orca Codex workers using authoritative dispatch records plus verified local CLI ownership. Ordinary forks stay independent.
 
 Ask in a normal Codex Discord thread, for example, `Use two subagents for implementation and review.` The request reaches the existing Codex session without a separate command or Orca. Realtime synchronization discovers spawned children and connects them to the layout below. Codex's subagent enablement, concurrency limits, and project instructions still apply.
