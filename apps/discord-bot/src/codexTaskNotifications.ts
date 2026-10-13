@@ -45,6 +45,7 @@ export interface NotifyCodexTaskCompletionsInput {
   sessions: DiscoveredCodexSession[];
   mentionRoleIds?: string[];
   ignoredSessionIds?: Iterable<string>;
+  activeOrcaSessionIds?: Iterable<string>;
   locale?: ConnectorLocale;
 }
 
@@ -406,6 +407,29 @@ export async function notifyCodexTaskCompletions(
       };
     });
   };
+
+  // A live Orca session needs a reply thread before its first completion.
+  // Use the existing creation/persistence path so completion reuses that thread.
+  if (state.transcriptSyncMode === "realtime") {
+    const activeOrcaSessionIds = new Set([...(input.activeOrcaSessionIds ?? [])].map(normalizedSessionId));
+    const archivedSessionIds = new Set(state.archivedCodexSessionIds.map(normalizedSessionId));
+    for (const session of input.sessions) {
+      const sessionKey = normalizedSessionId(session.id);
+      if (!activeOrcaSessionIds.has(sessionKey) || ignoredSessionIds.has(sessionKey) ||
+          archivedSessionIds.has(sessionKey) || session.subagent ||
+          state.sessionChannels.some(channel => normalizedSessionId(channel.codexSessionId ?? "") === sessionKey) ||
+          hasPendingCodexForkReservation(state, session)) continue;
+      const ensured = await ensureSessionThread({
+        guild: input.guild, controlApi: input.controlApi, state,
+        adminChannelId: input.adminChannelId, computerId: input.computerId,
+        defaultWorkspaceRoot: input.defaultWorkspaceRoot, session,
+      });
+      if (ensured.created && ensured.channel) {
+        replacementThreadsBySession.set(sessionKey, ensured.channel);
+        await persistState();
+      }
+    }
+  }
 
   for (const session of input.sessions) {
     const sessionKey = normalizedSessionId(session.id);

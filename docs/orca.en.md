@@ -7,7 +7,7 @@ The Direct-mode gateway can send your Discord replies to an existing Codex or Cl
 ## Use it
 
 1. Update the connector source, install dependencies, and restart the **gateway**. It registers `/orca` on startup. The independent Worker need not restart for this feature.
-2. With Codex running in Orca, **reply in the Discord thread already synced to that session**. No terminal picker is required: the reply is typed into that session's terminal with Enter.
+2. With realtime sync enabled, **a new Codex session running in Orca gets a Discord thread before its first task finishes**. Reply in that thread. No terminal picker is required: the reply is typed into that session's terminal with Enter.
 3. Run `/orca` to check the current connection. Press **Read screen** or run `/orca action:read` to see the current question.
 4. `/orca action:disconnect` also disables automatic routing for this thread. `/orca action:auto` enables it again.
 

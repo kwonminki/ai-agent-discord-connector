@@ -550,6 +550,7 @@ export async function startBot(): Promise<void> {
             computerId: connectConfig.direct.computerId,
             defaultWorkspaceRoot: connectConfig.direct.workspaceRoot,
             sessions,
+            activeOrcaSessionIds: orcaClient?.activeCodexSessionIds?.(),
             mentionRoleIds: connectConfig.discord.allowedRoleIds,
             ignoredSessionIds: activelyStreamedSessionIds,
             locale,

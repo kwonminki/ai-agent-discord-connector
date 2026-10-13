@@ -50,6 +50,58 @@ function session(input: {
 }
 
 describe("notifyCodexTaskCompletions", () => {
+  it("creates a live Orca reply thread before any completion and reuses it after restart and completion", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "orca-auto-thread-"));
+    const statePath = path.join(tempRoot, "state.json");
+    const stateStore = createDirectSyncStateStore(statePath);
+    const createThread = vi.fn().mockResolvedValue({ id: "orca-thread" });
+    const sendTextMessage = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      guild: { createThread, sendTextMessage }, stateStore,
+      controlApi: { createManagedChannel: vi.fn().mockResolvedValue({}), linkCodexSession: vi.fn().mockResolvedValue({}) },
+      adminChannelId: "admin", computerId: "computer", defaultWorkspaceRoot: "/repo",
+      activeOrcaSessionIds: ["session-1"], sessions: [session({})],
+    };
+    try {
+      await expect(notifyCodexTaskCompletions(input)).resolves.toMatchObject({ completedSessions: 0, notifiedSessions: 0 });
+      expect(createThread).toHaveBeenCalledWith(expect.objectContaining({ parentChannelId: "admin", name: "Build feature" }));
+      expect(sendTextMessage).not.toHaveBeenCalled();
+      expect((await stateStore.read()).sessionChannels).toEqual([expect.objectContaining({ codexSessionId: "session-1", discordChannelId: "orca-thread" })]);
+      await notifyCodexTaskCompletions({ ...input, stateStore: createDirectSyncStateStore(statePath) });
+      await notifyCodexTaskCompletions({ ...input, sessions: [session({ completionKey: "complete", assistantAnswer: "Done" })] });
+      expect(createThread).toHaveBeenCalledTimes(1);
+      expect(sendTextMessage).toHaveBeenCalledWith("orca-thread", expect.anything());
+    } finally { await rm(tempRoot, { recursive: true, force: true }); }
+  });
+
+  it.each(["not-orca", "on-chat", "archived", "subagent", "ignored", "pending-fork"])("does not auto-create a live root thread for %s", async (excluded) => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "orca-auto-skip-"));
+    const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+    const createThread = vi.fn().mockResolvedValue({ id: "unexpected" });
+    const candidate = session({ forkedFromId: excluded === "pending-fork" ? "source" : undefined });
+    if (excluded === "subagent") candidate.subagent = { source: "orca", parentSessionId: "parent" };
+    try {
+      await stateStore.update(state => ({ ...state,
+        transcriptSyncMode: excluded === "on-chat" ? "on-chat" : "realtime",
+        archivedCodexSessionIds: excluded === "archived" ? [candidate.id] : [],
+        sessionChannels: excluded === "pending-fork" ? [{
+          codexSessionId: null, threadName: "Pending fork", updatedAt: candidate.updatedAt,
+          cwd: "/repo", workspaceRoot: "/repo", workspaceDisplayName: "repo", discordCategoryId: null,
+          discordChannelId: "pending", discordParentChannelId: "admin", discordDeliveryMode: "thread",
+          channelMode: "session-linked", pendingForkSourceDiscordChannelId: "source-thread", pendingForkSourceSessionId: "source",
+          channelName: "pending", computerId: "computer", workspaceId: "computer:/repo",
+        }] : [],
+      }));
+      await notifyCodexTaskCompletions({
+        guild: { createThread }, stateStore, adminChannelId: "admin", computerId: "computer",
+        controlApi: { createManagedChannel: vi.fn(), linkCodexSession: vi.fn() }, sessions: [candidate],
+        activeOrcaSessionIds: excluded === "not-orca" ? [] : [candidate.id],
+        ignoredSessionIds: excluded === "ignored" ? [candidate.id] : [],
+      });
+      expect(createThread).not.toHaveBeenCalled();
+    } finally { await rm(tempRoot, { recursive: true, force: true }); }
+  });
+
   it("baselines existing completed sessions without posting old notifications", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-task-notifications-"));
     const stateStore = createDirectSyncStateStore(path.join(tempRoot, "state.json"));

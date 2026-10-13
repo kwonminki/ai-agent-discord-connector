@@ -10,6 +10,36 @@ function runner(response: unknown) {
 }
 
 describe("Orca CLI adapter", () => {
+  it("shares a fresh, verified owner snapshot with channel discovery without extra scans", async () => {
+    const owner = { sessionId: "session", terminalHandle: target.handle, processKey: "123:456" };
+    const owners = vi.fn().mockResolvedValue([owner]);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const client = createOrcaClient("orca", runner({ terminal: target, runs: [] }), async () => null, owners);
+    try {
+      expect(client.activeCodexSessionIds!()).toEqual([]);
+      await client.subagents!(["session"]);
+      expect(client.activeCodexSessionIds!()).toEqual(["session"]);
+      await client.subagents!(["session"]);
+      expect(client.activeCodexSessionIds!()).toEqual(["session"]);
+      expect(owners).toHaveBeenCalledTimes(2);
+      clock.mockReturnValue(31_000);
+      expect(client.activeCodexSessionIds!()).toEqual([]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each(["disconnected", "replaced", "discovery-error"])("excludes %s owners from automatic channel creation", async (failure) => {
+    const owner = { sessionId: "session", terminalHandle: target.handle, processKey: "123:456" };
+    const owners = vi.fn().mockResolvedValueOnce([owner]).mockResolvedValue([
+      { ...owner, processKey: failure === "replaced" ? "new-process" : owner.processKey },
+    ]);
+    const run = runner({ terminal: { ...target, connected: failure !== "disconnected" }, runs: [] });
+    if (failure === "discovery-error") run.mockRejectedValue(new Error("unavailable"));
+    const client = createOrcaClient("orca", run, async () => null, owners);
+    if (failure === "discovery-error") await expect(client.subagents!()).rejects.toThrow();
+    else await client.subagents!();
+    expect(client.activeCodexSessionIds!()).toEqual([]);
+  });
+
   it("invalidates subagent discovery immediately when a new session appears", async () => {
     const owners = vi.fn().mockResolvedValue([]);
     const run = runner({});

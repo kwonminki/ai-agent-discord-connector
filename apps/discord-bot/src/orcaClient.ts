@@ -20,6 +20,7 @@ export type OrcaTerminal = z.infer<typeof terminalSchema>;
 export type OrcaTarget = OrcaTerminal & { runtimeId: string; processKey?: string };
 export interface OrcaClient {
   subagents?(sessionIds?: string[]): Promise<OrcaSubagentLink[]>;
+  activeCodexSessionIds?(): string[];
   list(): Promise<{ terminals: OrcaTarget[]; truncated: boolean }>;
   show(handle: string): Promise<OrcaTarget>;
   screen(target: OrcaTarget, beforeInput?: boolean): Promise<string>;
@@ -61,7 +62,7 @@ export function createOrcaClient(
   let guide: Promise<void> | undefined;
   let orchestrationGuide: Promise<unknown> | undefined;
   const observedSessionIds = new Set<string>();
-  let linksCache: { at: number; links: OrcaSubagentLink[] } | undefined;
+  let linksCache: { at: number; links: OrcaSubagentLink[]; activeSessionIds: string[] } | undefined;
   async function invoke(args: string[]) {
     try {
       // Never use a shell: prompts, handles, and executable paths are literal argv.
@@ -85,13 +86,17 @@ export function createOrcaClient(
     return envelopeSchema.parse(await invoke(args));
   }
   return {
+    activeCodexSessionIds() {
+      // Reuse the verified discovery snapshot; do not scan processes on every poll.
+      return linksCache && Date.now() - linksCache.at < 30_000 ? [...linksCache.activeSessionIds] : [];
+    },
     async subagents(sessionIds = []) {
       const hasNewSession = sessionIds.some(id => !observedSessionIds.has(id));
       for (const id of sessionIds) observedSessionIds.add(id);
       // A new worker must not get a flat completion thread during the cache TTL.
       if (!hasNewSession && linksCache && Date.now() - linksCache.at < 30_000) return linksCache.links;
       const owners = await listOwners();
-      if (!owners.length) { linksCache = { at: Date.now(), links: [] }; return []; }
+      if (!owners.length) { linksCache = { at: Date.now(), links: [], activeSessionIds: [] }; return []; }
       orchestrationGuide ??= invoke(["skills", "get", "orchestration"]).then(value => {
         const object = value as { markdown?: unknown; result?: { markdown?: unknown } };
         if (typeof (object?.markdown ?? object?.result?.markdown) !== "string") throw new Error("Orca orchestration guide unavailable.");
@@ -127,7 +132,10 @@ export function createOrcaClient(
         after.sessionId === id && after.terminalHandle === before.terminalHandle && after.processKey === before.processKey));
       const stable = links.filter(link => unchanged(link.sessionId) && unchanged(link.subagent.parentSessionId) &&
         new Set(links.filter(other => other.sessionId === link.sessionId).map(other => other.subagent.parentSessionId)).size === 1);
-      linksCache = { at: Date.now(), links: stable };
+      const activeSessionIds = owners.filter(owner => unchanged(owner.sessionId) && terminals.some(terminal =>
+        terminal.handle === owner.terminalHandle && terminal.agentIdentity === "codex" && isOrcaAgent(terminal)))
+        .map(owner => owner.sessionId);
+      linksCache = { at: Date.now(), links: stable, activeSessionIds };
       return stable;
     },
     async resolveSession(agent, sessionId) {
