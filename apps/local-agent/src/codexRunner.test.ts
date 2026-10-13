@@ -164,7 +164,7 @@ describe("runCodexPrompt", () => {
     }
   });
 
-  it("passes a selected reasoning effort to codex exec prompt runs", async () => {
+  it.each(["low", "ultra"] as const)("passes %s reasoning effort to codex exec prompt runs", async (effort) => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "codex-runner-"));
     const fakeCodex = path.join(tempRoot, "codex");
     const argsFile = path.join(tempRoot, "args.json");
@@ -189,13 +189,11 @@ describe("runCodexPrompt", () => {
         cwd: tempRoot,
         prompt: "Explain this",
         timeoutMs: 5_000,
-        reasoningEffort: "low",
+        reasoningEffort: effort,
         codexCommand: fakeCodex,
       });
 
-      await expect(readFile(argsFile, "utf8")).resolves.toContain(
-        '"-c","model_reasoning_effort=\\"low\\""',
-      );
+      expect(JSON.parse(await readFile(argsFile, "utf8"))).toEqual(expect.arrayContaining(["-c", `model_reasoning_effort="${effort}"`]));
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }

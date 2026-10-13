@@ -30,6 +30,12 @@ function options(input: Record<string, string | number | boolean | null>) {
 }
 
 describe("Discord application commands", () => {
+  it("offers and routes Codex Ultra effort", () => {
+    const effort = DISCORD_APPLICATION_COMMANDS.find(command => command.name === "effort");
+    expect(effort?.options?.[0]).toMatchObject({ choices: expect.arrayContaining([{ name: "Ultra (Codex)", value: "ultra" }]) });
+    expect(routeDiscordApplicationCommand({ commandName: "effort", options: options({ level: "ultra" }) })).toBe("effort ultra");
+  });
+
   it("defines native slash commands for common Codex and bridge actions", () => {
     expect(DISCORD_APPLICATION_COMMANDS.map((command) => command.name)).toEqual([
       "orca",

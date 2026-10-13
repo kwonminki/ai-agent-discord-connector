@@ -29,7 +29,7 @@ Admin/main commands:
 - `/where` shows the current channel mode, computer, workspace, cwd, timeout, and linked Codex session.
 - `/status` shows the same status card with the effective model, effort, and whether each value comes from the main default, a thread override, or the CLI default.
 - `/settings` shows the Codex defaults owned by this main channel.
-- `/model model:<name>` and `/effort level:<level>` persist this computer's Codex defaults. Codex maps `max` to its highest supported value, `xhigh`.
+- `/model model:<name>` and `/effort level:<level>` persist this computer's Codex defaults. Codex accepts `ultra` for supported models; the legacy `max` alias still maps to `xhigh`.
 - `/browse` opens the current directory browser UI.
 - `/shell command:<명령>` runs a shell command through the existing safety policy.
 - `/diff` runs `git diff --stat` in the current channel cwd.
@@ -56,7 +56,7 @@ Session-linked commands:
 - `/compact prompt:<요청>` is agent-aware: Claude Code receives its native `/compact [instructions]` command in the persistent session, while Codex receives the existing compact working-context summary request. If an agent turn is already active, the command waits as the next turn instead of steering the active work.
 - `/skill name:<skill> prompt:<요청>` sends an exec-compatible prompt asking Codex to apply the named skill perspective.
 - `/model model:<모델>` stores a persistent per-thread model override for Codex or Claude Code. Use `default` to inherit the owning main channel again.
-- `/effort level:low/medium/high/xhigh/max/default` stores a persistent per-thread reasoning override. Codex supports through `xhigh`; Claude Code supports through `max`.
+- `/effort level:low/medium/high/xhigh/max/ultra/default` stores a persistent per-thread reasoning override. Codex supports `ultra` on eligible models; Claude Code supports through `max`. Use it in the Codex main channel to change this computer’s default, or in one thread to override only that thread. `default` restores inheritance. App/Orca-owned conversations keep their owner’s settings. See [official reasoning guidance](https://learn.chatgpt.com/docs/agent-configuration/subagents#choosing-models-and-reasoning).
 - `/settings` shows the effective model and effort together with their source.
 - `/archive` opens a confirmation card for the current generated session channel; use `archive confirm` to archive.
 - `/fork` opens a name modal in Codex/Claude Code session threads and creates a sibling Discord thread backed by a distinct forked agent session. Failed forks, source-session ID reuse, and duplicate Discord links are rejected; unlinked temporary threads are cleaned up. Codex uses app-server `thread/fork`; Claude Code uses `claude --resume <session> --fork-session`.

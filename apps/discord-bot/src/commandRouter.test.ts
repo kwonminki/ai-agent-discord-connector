@@ -726,6 +726,14 @@ describe("routeDiscordMessage", () => {
     })).toEqual({ type: "agent-effort", effort: "max" });
   });
 
+  it("accepts Ultra for Codex and blocks it in Claude channels", () => {
+    const base = { userRoleIds: ["operator"], allowedRoleIds: ["operator"], content: "effort Ultra" };
+    expect(routeDiscordMessage({ ...base, channelMode: "session-linked" })).toEqual({ type: "agent-effort", effort: "ultra" });
+    expect(routeDiscordMessage({ ...base, channelMode: "shell-admin", agentMain: "codex" })).toEqual({ type: "agent-effort", effort: "ultra" });
+    expect(routeDiscordMessage({ ...base, channelMode: "claude-code" })).toMatchObject({ type: "blocked-command", reason: "Ultra는 Codex 전용 설정입니다." });
+    expect(routeDiscordMessage({ ...base, channelMode: "shell-admin", agentMain: "claude" })).toMatchObject({ type: "blocked-command" });
+  });
+
   it("routes per-thread settings and inheritance resets for both agents", () => {
     const base = {
       userRoleIds: ["role-operator"],

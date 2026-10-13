@@ -116,6 +116,7 @@ describe("runCodexAppServerPrompt", () => {
         workspaceRoot,
         cwd: workspaceRoot,
         prompt: "긴 작업을 시작해줘",
+        reasoningEffort: "ultra",
         timeoutMs: 5_000,
         sessionId: null,
         controlKey: "discord-channel-1",
@@ -143,6 +144,7 @@ describe("runCodexAppServerPrompt", () => {
         status: "no-active-turn",
       });
       expect(received).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: "turn/start", params: expect.objectContaining({ effort: "ultra" }) }),
         expect.objectContaining({
           method: "turn/steer",
           params: {

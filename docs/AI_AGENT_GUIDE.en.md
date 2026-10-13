@@ -611,7 +611,7 @@ sandbox=danger-full-access
 network=enabled
 ```
 
-Claude Code uses `bypassPermissions`. Default effort is Codex `xhigh` and Claude Code `max`. Models follow each CLI unless overridden in Discord.
+Claude Code uses `bypassPermissions`. Default effort is Codex `xhigh` and Claude Code `max`. `/effort level:ultra` selects Ultra for supported Codex models; it is passed unchanged through worker validation and both Codex runners. Models follow each CLI unless overridden in Discord.
 
 The connector cannot bypass OS permissions, Windows ACL/UAC policy, sudo, macOS privacy controls, Linux ACLs, or container GPU exposure.
 

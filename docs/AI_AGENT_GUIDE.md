@@ -1182,7 +1182,7 @@ chat new cwd:/Users/me/project name:주간 보고서
 | `/status` | `/where` 정보와 함께 현재 agent model, effort, 설정 출처를 보여줍니다. |
 | `/settings` | 이 main 채널이 관리하는 Codex 또는 Claude Code 기본 model/effort를 보여줍니다. |
 | `/model model:<모델 또는 default>` | 이 컴퓨터의 해당 agent 기본 모델을 영구 저장합니다. `default`는 CLI 기본 모델을 사용합니다. |
-| `/effort level:<단계>` | 해당 agent 기본 effort를 영구 저장합니다. Codex 최고값은 `xhigh`, Claude 최고값은 `max`입니다. |
+| `/effort level:<단계>` | 해당 agent 기본 effort를 영구 저장합니다. Codex는 지원 모델에서 `ultra`를 선택할 수 있고, Claude 최고값은 `max`입니다. |
 | `/browse` | 현재 폴더의 파일 브라우저 UI를 엽니다. |
 | `/shell command:<명령>` | 현재 cwd에서 shell 명령을 실행합니다. |
 | `/diff` | 현재 cwd에서 `git diff --stat`을 실행합니다. |
@@ -1217,7 +1217,7 @@ chat new cwd:/Users/me/project name:주간 보고서
 | `/compact prompt:<요청>` | 대화형 `/compact` passthrough가 아니라, 현재 작업 맥락을 압축 요약하도록 Codex에 요청합니다. |
 | `/skill name:<skill> prompt:<요청>` | 지정한 skill 관점으로 Codex 요청을 실행합니다. |
 | `/model model:<모델 또는 default>` | 현재 Codex 또는 Claude Code thread의 모델 override를 영구 저장합니다. `default`는 main 기본값을 다시 상속합니다. |
-| `/effort level:low/medium/high/xhigh/max/default` | 현재 thread의 effort override를 저장합니다. Codex의 `max` 입력은 `xhigh`로 정규화됩니다. |
+| `/effort level:low/medium/high/xhigh/max/ultra/default` | 현재 thread의 effort override를 저장합니다. Codex의 `max` 입력은 `xhigh`로 정규화됩니다. |
 | `/settings` | 현재 thread에 실제 적용되는 model/effort와 `main default`, `thread override`, `CLI default` 출처를 보여줍니다. |
 | `/archive` | 현재 세션 채널의 보관 확인 카드를 엽니다. 확정하려면 `archive confirm`을 사용합니다. |
 | `/fork` | Codex 또는 Claude Code session thread에서 이름 입력 모달을 열고, 현재 agent session을 새 Discord thread로 fork합니다. |

@@ -330,7 +330,7 @@ function parseAgentModel(content: string): { model: string | null } | null {
 
 function parseAgentEffort(content: string): { effort: AgentEffort | "default" } | null {
   const normalized = content.replace(/\s+/g, " ").trim().toLowerCase();
-  const match = normalized.match(/^effort\s+(default|reset|inherit|low|medium|high|xhigh|max)$/);
+  const match = normalized.match(/^effort\s+(default|reset|inherit|low|medium|high|xhigh|max|ultra)$/);
 
   if (!match) {
     return null;
@@ -1250,6 +1250,12 @@ export function routeDiscordMessage(input: RouteDiscordMessageInput): RoutedDisc
     }
 
     if (agentEffort) {
+      if (agentEffort.effort === "ultra" && (input.agentMain ?? (input.channelMode === "claude-code" ? "claude" : "codex")) === "claude") {
+        return blockedCommand(
+          "Ultra는 Codex 전용 설정입니다.",
+          "Codex 채널에서 effort ultra를 사용하세요. Claude Code는 effort max를 사용할 수 있습니다.",
+        );
+      }
       return { type: "agent-effort", effort: agentEffort.effort };
     }
 

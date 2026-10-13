@@ -2288,7 +2288,7 @@ export function formatAgentSettingsResult(input: {
 
 export function formatCodexRunModeResult(input: {
   mode: "default" | "fast" | "task";
-  reasoningEffort: "low" | "medium" | "high" | "xhigh";
+  reasoningEffort: "low" | "medium" | "high" | "xhigh" | "ultra";
 }): DiscordMessagePayload {
   return messagePayload({
     title: "Codex mode updated",

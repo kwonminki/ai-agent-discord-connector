@@ -38,22 +38,23 @@ describe("direct sync state store", () => {
         }],
       });
 
-      await store.updateAgentDefaults("codex", { model: "gpt-5.6-sol", effort: "high" });
+      await store.updateAgentDefaults("codex", { model: "gpt-5.6-sol", effort: "ultra" });
       await store.updateAgentDefaults("claude", { model: "claude-fable-5[1m]", effort: "max" });
       await store.updateSessionChannelAgentSettings("thread-1", {
         model: "gpt-5.4",
-        effort: "medium",
+        effort: "ultra",
       });
 
-      await expect(store.read()).resolves.toMatchObject({
+      const reopened = createDirectSyncStateStore(path.join(tempRoot, "state.json"));
+      await expect(reopened.read()).resolves.toMatchObject({
         agentDefaults: {
-          codex: { model: "gpt-5.6-sol", effort: "high" },
+          codex: { model: "gpt-5.6-sol", effort: "ultra" },
           claude: { model: "claude-fable-5[1m]", effort: "max" },
         },
         sessionChannels: [{
           discordChannelId: "thread-1",
           agentModelOverride: "gpt-5.4",
-          agentEffortOverride: "medium",
+          agentEffortOverride: "ultra",
         }],
       });
 

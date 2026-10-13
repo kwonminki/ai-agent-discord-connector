@@ -352,6 +352,7 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
           { name: "high", value: "high" },
           { name: "xhigh", value: "xhigh" },
           { name: "max", value: "max" },
+          { name: "Ultra (Codex)", value: "ultra" },
         ],
       }),
     ],

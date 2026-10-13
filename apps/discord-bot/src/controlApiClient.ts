@@ -31,7 +31,7 @@ export interface RunCodexPromptJobPayload {
   sessionName?: string | null;
   mode?: "prompt" | "review";
   model?: string | null;
-  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | null;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "ultra" | null;
   controlKey?: string;
   guidance?: AgentGuidance;
   harnessBuilder?: boolean;

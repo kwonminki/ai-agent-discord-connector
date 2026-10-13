@@ -2392,7 +2392,8 @@ describe("createDiscordMessageHandler", () => {
     );
   });
 
-  it("persists main defaults and applies them to Codex and Claude threads", async () => {
+  it.each(["max", "ultra"] as const)("persists Codex %s defaults and applies them to threads without changing Claude", async (requestedEffort) => {
+    const codexEffort = requestedEffort === "max" ? "xhigh" : "ultra";
     let defaults = {
       codex: { model: null as string | null, effort: "xhigh" as const },
       claude: { model: null as string | null, effort: "max" as const },
@@ -2437,18 +2438,18 @@ describe("createDiscordMessageHandler", () => {
     });
 
     await send("codex-main", "model gpt-5.6-sol");
-    await send("codex-main", "effort max");
+    await send("codex-main", `effort ${requestedEffort}`);
     await send("claude-main", "model claude-fable-5[1m]");
     await send("claude-main", "effort max");
     await send("codex-thread", "이 설정으로 작업해줘");
     await send("claude-thread", "이 설정으로 작업해줘");
 
     expect(updateAgentDefaults).toHaveBeenCalledWith("codex", { model: "gpt-5.6-sol" });
-    expect(updateAgentDefaults).toHaveBeenCalledWith("codex", { effort: "xhigh" });
+    expect(updateAgentDefaults).toHaveBeenCalledWith("codex", { effort: codexEffort });
     expect(updateAgentDefaults).toHaveBeenCalledWith("claude", { model: "claude-fable-5[1m]" });
     expect(updateAgentDefaults).toHaveBeenCalledWith("claude", { effort: "max" });
     expect(submitCodexPrompt).toHaveBeenCalledWith(expect.objectContaining({
-      payload: expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: "xhigh" }),
+      payload: expect.objectContaining({ model: "gpt-5.6-sol", reasoningEffort: codexEffort }),
     }));
     expect(submitClaudePrompt).toHaveBeenCalledWith(expect.objectContaining({
       payload: expect.objectContaining({ model: "claude-fable-5[1m]", effort: "max" }),

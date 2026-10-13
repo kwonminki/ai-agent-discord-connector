@@ -4,6 +4,8 @@ export const enLocale: ConnectorLocaleCatalog = {
   code: "en",
   label: "English",
   messages: {
+    "Ultra는 Codex 전용 설정입니다.": "Ultra is a Codex-only setting.",
+    "Codex 채널에서 effort ultra를 사용하세요. Claude Code는 effort max를 사용할 수 있습니다.": "Use effort ultra in a Codex channel. Claude Code supports effort max.",
     "Discord 설정값 준비:": "Discord setup values:",
     "1. Bot token: Discord Developer Portal (https://discord.com/developers/applications) > 앱 선택 > Bot > Reset Token/Copy": "1. Bot token: Discord Developer Portal (https://discord.com/developers/applications) > select app > Bot > Reset Token/Copy",
     "Public Key와 OAuth2 Client ID는 connector 설정에 넣지 않습니다. Bot token은 외부에 공유하지 마세요.": "Public Key and OAuth2 Client ID are not connector settings. Never share the bot token.",

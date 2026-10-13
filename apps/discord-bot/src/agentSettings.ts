@@ -1,5 +1,5 @@
 export type AgentKind = "codex" | "claude";
-export type AgentEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type AgentEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface AgentSettings {
   model: string | null;
@@ -22,14 +22,17 @@ export const DEFAULT_AGENT_SETTINGS: AgentDefaultSettings = {
 };
 
 export function isAgentEffort(value: unknown): value is AgentEffort {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" || value === "ultra";
 }
 
+export function normalizeAgentEffort(agent: "claude", value: unknown): Exclude<AgentEffort, "ultra">;
+export function normalizeAgentEffort(agent: AgentKind, value: unknown): AgentEffort;
 export function normalizeAgentEffort(agent: AgentKind, value: unknown): AgentEffort {
   if (!isAgentEffort(value)) {
     return DEFAULT_AGENT_SETTINGS[agent].effort;
   }
 
+  if (agent === "claude" && value === "ultra") return "max";
   return agent === "codex" && value === "max" ? "xhigh" : value;
 }
 

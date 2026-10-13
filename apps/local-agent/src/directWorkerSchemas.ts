@@ -34,7 +34,7 @@ export const runCodexPromptInputSchema = z.object({
   codexCommand: z.string().optional(),
   mode: z.enum(["prompt", "review"]).optional(),
   model: nullableStringSchema,
-  reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).nullable().optional(),
+  reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "ultra"]).nullable().optional(),
   controlKey: z.string().optional(),
   guidance: agentGuidanceSchema.optional(),
   harnessBuilder: z.boolean().optional(),

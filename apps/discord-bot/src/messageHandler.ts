@@ -36,7 +36,7 @@ import type {
 import type { TranscriptSyncMode } from "./directState.js";
 import type { DiscordIncomingAttachment, MaterializedDiscordAttachment } from "./incomingAttachments.js";
 import { extractAgentSurveyRequests } from "./agentSurvey.js";
-import type { AgentDefaultSettings, AgentEffort, AgentKind } from "./agentSettings.js";
+import { normalizeAgentEffort, type AgentDefaultSettings, type AgentEffort, type AgentKind } from "./agentSettings.js";
 import { createAgentSettingsController } from "./agentSettingsController.js";
 import { buildAgentRelayCallbackMessages, collectAgentResultFiles } from "./agentRelayBridge.js";
 import type { ActiveRelayPresence } from "./agentRelayPresence.js";
@@ -1335,7 +1335,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               forkSession: false,
               sessionName: inputRepair.sessionName,
               model: settings.model,
-              effort: settings.effort,
+              effort: normalizeAgentEffort("claude", settings.effort),
               harnessBuilder: true,
             },
             onProgress: inputRepair.onProgress,
@@ -1546,7 +1546,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
           forkSession: inputTurn.forkSession,
           sessionName: inputTurn.thread.threadName,
           model: settings.model,
-          effort: settings.effort,
+          effort: normalizeAgentEffort("claude", settings.effort),
           harnessBuilder: Boolean(inputTurn.build),
           ...(inputTurn.run ? { harness: input.harnessStore?.workerBinding(inputTurn.run) } : {}),
         },
@@ -3554,7 +3554,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
               forkSession: true,
               sessionName: forkThread.threadName,
               model: agentSettings.model,
-              effort: agentSettings.effort,
+              effort: normalizeAgentEffort("claude", agentSettings.effort),
               controlKey: forkThread.discordChannelId,
               harnessBuilder: Boolean(forkHarnessBuild),
               ...(forkHarnessRun ? { harness: input.harnessStore?.workerBinding(forkHarnessRun) } : {}),
@@ -3880,7 +3880,7 @@ export function createDiscordMessageHandler(input: CreateDiscordMessageHandlerIn
             controlKey: message.channelId,
             sessionId: streamedSessionId,
             model: agentSettings.model,
-            effort: agentSettings.effort,
+            effort: normalizeAgentEffort("claude", agentSettings.effort),
             harnessBuilder: Boolean(harnessBuild),
             ...(harnessRun ? { harness: input.harnessStore?.workerBinding(harnessRun) } : {}),
           },

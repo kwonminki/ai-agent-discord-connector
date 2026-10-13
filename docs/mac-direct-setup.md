@@ -181,7 +181,7 @@ CODEX_DISCORD_CODEX_SANDBOX=danger-full-access
 
 When Codex is enabled on macOS LaunchAgent services, set `CODEX_DISCORD_CODEX_COMMAND` to the absolute Codex CLI path because login services do not inherit the same `PATH` as an interactive terminal. Do the same with `CODEX_DISCORD_CLAUDE_COMMAND` when Claude Code is enabled.
 
-Discord Codex prompts use `xhigh` reasoning by default, and Claude Code prompts use `max` effort by default. Set persistent computer defaults with `/model`, `/effort`, and `/settings` in each agent parent channel. A session thread can override both values and use `default` to inherit the parent setting again. `fast` remains a Codex-only alias for a quick low-reasoning pass; `task` uses `xhigh`.
+Discord Codex prompts use `xhigh` reasoning by default, and Claude Code prompts use `max` effort by default. Set persistent computer defaults with `/model`, `/effort`, and `/settings` in each agent parent channel. A session thread can override both values and use `default` to inherit the parent setting again. Use `/effort level:ultra` to select Ultra for a supported Codex model. `fast` remains a Codex-only alias for a quick low-reasoning pass; `task` uses `xhigh`.
 
 Claude Code can be launched from a session channel in direct mode:
 

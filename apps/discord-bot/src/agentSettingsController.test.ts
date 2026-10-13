@@ -18,6 +18,18 @@ const codexThread: ManagedDiscordChannelContext = {
 };
 
 describe("createAgentSettingsController", () => {
+  it("preserves Ultra for Codex overrides and inherited defaults", async () => {
+    const updateSession = vi.fn();
+    const controller = createAgentSettingsController({ updateSession });
+    await controller.updateEffort("main", { ...codexThread, agentMain: "codex" }, "ultra");
+    expect(controller.codexReasoningEffort("inherited", codexThread)).toBe("ultra");
+    await controller.updateEffort("override", codexThread, "ultra");
+    expect(updateSession).toHaveBeenCalledWith("override", { effort: "ultra" });
+    expect(controller.codexReasoningEffort("override", codexThread)).toBe("ultra");
+    await controller.updateEffort("override", codexThread, "default");
+    expect(controller.codexReasoningEffort("override", codexThread)).toBe("ultra");
+  });
+
   it("resolves each agent from the channel context", () => {
     const controller = createAgentSettingsController();
 

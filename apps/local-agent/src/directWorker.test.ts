@@ -8,6 +8,29 @@ import { startDirectWorker } from "./directWorker.js";
 import { createDirectWorkerStore } from "./directWorkerStore.js";
 
 describe("direct worker", () => {
+  it("accepts and executes queued Codex Ultra requests", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-ultra-"));
+    const store = createDirectWorkerStore(path.join(root, "worker"));
+    const executable = path.join(root, "codex");
+    const argsFile = path.join(root, "args.json");
+    await writeFile(executable, [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs'); const args = process.argv.slice(2);",
+      `fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(args));`,
+      "fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], 'Ultra verified');",
+    ].join("\n"));
+    await chmod(executable, 0o755);
+    const worker = await startDirectWorker({ store, pollIntervalMs: 10 });
+    try {
+      const client = createDirectWorkerClient({ store, pollIntervalMs: 10 });
+      const response = await client.submit({ jobId: "ultra-job", type: "run-codex-prompt", queueKey: "ultra-thread", payload: {
+        runner: "exec", input: { workspaceRoot: root, cwd: root, prompt: "Verify effort", timeoutMs: 5000, reasoningEffort: "ultra", codexCommand: executable },
+      } });
+      expect(response).toMatchObject({ result: { status: "completed", finalMessage: "Ultra verified" } });
+      expect(JSON.parse(await readFile(argsFile, "utf8"))).toEqual(expect.arrayContaining(['model_reasoning_effort="ultra"']));
+    } finally { await worker.stop(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it("wakes immediately for a new job while retaining a slow polling fallback", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-wake-"));
     const store = createDirectWorkerStore(path.join(root, "worker"));
