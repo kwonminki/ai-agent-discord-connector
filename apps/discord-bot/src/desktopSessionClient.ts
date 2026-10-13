@@ -11,6 +11,11 @@ const versions: Record<string, number> = {
   "thread-follower-steer-turn": 1, "thread-follower-start-turn": 2,
 };
 const MAX_FRAME = 8 * 1024 * 1024;
+// Desktop's router can spend 10s discovering a handler BEFORE starting the
+// forwarded request's timeout. Leave time for both phases and the reply frame.
+const ROUTER_DISCOVERY_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 10_000;
+const RESPONSE_GRACE_MS = 1_000;
 type Response = { type: "response"; requestId: string; resultType: "success" | "error"; method?: string; handledByClientId?: string; result?: any; error?: string };
 export interface DesktopSession {
   send(text: string, messageId: string): Promise<"steered" | "started">;
@@ -20,7 +25,8 @@ export interface DesktopSessionClient { open(threadId: string): Promise<DesktopS
 
 export function createDesktopSessionClient(options: { codexHome?: string; timeoutMs?: number } = {}): DesktopSessionClient {
   const socketPath = path.join(options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "ipc", "ipc.sock");
-  const timeoutMs = options.timeoutMs ?? 10_000;
+  const timeoutMs = options.timeoutMs ?? ROUTER_DISCOVERY_TIMEOUT_MS + REQUEST_TIMEOUT_MS + RESPONSE_GRACE_MS;
+  const requestTimeoutMs = Math.min(timeoutMs, REQUEST_TIMEOUT_MS);
   return {
     async open(threadId) {
       if (process.platform === "win32" || !/^[0-9a-f-]{36}$/i.test(threadId)) return null;
@@ -72,7 +78,7 @@ export function createDesktopSessionClient(options: { codexHome?: string; timeou
         return new Promise((resolve, reject) => {
           const timer = setTimeout(() => { pending.delete(requestId); reject(new Error("Desktop response timed out. Delivery was not retried.")); close(); }, timeoutMs);
           pending.set(requestId, { resolve, reject, timer });
-          try { write({ type: "request", requestId, sourceClientId: clientId, method, version: versions[method], params, targetClientId, timeoutMs }); }
+          try { write({ type: "request", requestId, sourceClientId: clientId, method, version: versions[method], params, targetClientId, timeoutMs: requestTimeoutMs }); }
           catch { clearTimeout(timer); pending.delete(requestId); reject(new Error("Desktop request could not be written.")); close(); }
         });
       }

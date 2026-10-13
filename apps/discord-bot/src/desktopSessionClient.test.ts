@@ -129,6 +129,28 @@ describe("Desktop same-session IPC", () => {
     expect(await client().open(thread)).toBeNull();
     expect(requests.map(x => x.method)).toEqual(["initialize", "thread-owner-discovery"]);
   });
+  it("routes to the same worker after Desktop exhausts its 10s owner-discovery window", async () => {
+    respond = (m, socket) => {
+      if (m.method !== "thread-owner-discovery") return normal(m);
+      // The router has its own fixed discovery deadline, independent of the
+      // forwarded request budget. Its no-owner response arrives just after 10s.
+      setTimeout(() => write(socket, error(m, "no-client-found")), 10_050);
+    };
+    const submitCodexPrompt = vi.fn().mockResolvedValue({ jobId: "job", result: { status: "completed", finalMessage: "Done", sessionId: thread } });
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const handler = createDiscordMessageHandler({
+      desktopBridge: createDesktopSessionBridge({ client: createDesktopSessionClient({ codexHome: home }), file: path.join(home, "receipts.json") }),
+      resolveChannelContext: async () => ({ channelMode: "session-linked", codexSessionId: thread, allowedRoleIds: ["operator"], computerId: "host", computerDisplayName: "Host", workspaceDisplayName: "Work", workspaceRoot: "/work", cwd: "/work", timeoutMs: 3000 }),
+      submitCodexPrompt, submitCommandJob: vi.fn(), updateChannelCwd: vi.fn(), recordCommandAudit: vi.fn(),
+    });
+    await handler({ content: "Continue here", authorBot: false, userId: "user", channelId: "channel", roleIds: ["operator"], messageId: "id", reply });
+    expect(submitCodexPrompt).toHaveBeenCalledTimes(1);
+    expect(submitCodexPrompt.mock.calls[0]?.[0]).toMatchObject({ payload: { sessionId: thread, prompt: "Continue here" } });
+    expect(submitCodexPrompt.mock.calls[0]?.[0].payload.forkSession).not.toBe(true);
+    expect(JSON.stringify(reply.mock.calls)).not.toContain("timed out");
+    expect(requests.map(x => x.method)).toEqual(["initialize", "thread-owner-discovery"]);
+    expect(requests.at(-1).timeoutMs).toBe(10_000);
+  }, 20_000);
   it("requires an app supporting the observed follower protocol", async () => {
     respond = m => m.method === "thread-owner-discovery" ? success(m, {}) : normal(m);
     await expect(client().open(thread)).rejects.toThrow("Update the Desktop");

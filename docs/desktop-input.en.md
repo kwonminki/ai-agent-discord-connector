@@ -24,6 +24,8 @@ The Direct gateway and app must run on the **same computer, as the same user, wi
 
 Update the source, install dependencies, and restart only the **gateway**. Forwarding is enabled by default; the worker and app need not restart. Set `CONNECT_DESKTOP_INPUT_ENABLED=false` in the gateway environment to disable it.
 
+The app router may take 10 seconds to confirm that no app client owns a conversation. The connector allows this discovery window plus the forwarded request budget before timing out. An explicit `no-client-found` result during initial discovery continues through the existing worker; an unanswered discovery or unconfirmed input still stops without retrying.
+
 This supports local Codex work sessions in the app, not ordinary ChatGPT web chats. It uses the app's same-user IPC owner-discovery/follower protocol, which is not a publicly stable API. Owner discovery for an existing conversation was verified with ChatGPT app `26.928.20755` and bundled Codex `0.159.0`. App updates may require connector compatibility updates.
 
 ## Delivery and recovery
