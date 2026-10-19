@@ -26,10 +26,10 @@ afterEach(() => {
   for (const mock of Object.values(mocks)) mock.mockClear();
 });
 
-async function start() {
+async function start(maxIntervalMs = 20_000) {
   vi.useFakeTimers(); vi.setSystemTime(0);
   vi.stubEnv("CONNECT_BACKGROUND_MAX_LOAD", "0.7");
-  vi.stubEnv("CONNECT_BACKGROUND_POLL_MAX_INTERVAL_MS", "20000");
+  vi.stubEnv("CONNECT_BACKGROUND_POLL_MAX_INTERVAL_MS", String(maxIntervalMs));
   vi.stubEnv("CONNECT_TRANSCRIPT_SYNC_INTERVAL_MS", "5000");
   vi.stubEnv("CONNECT_TASK_NOTIFICATION_INTERVAL_MS", "3000");
   vi.stubEnv("CONNECT_CLAUDE_SESSION_SYNC_INTERVAL_MS", "5000");
@@ -68,4 +68,17 @@ it("does not overlap a slow scan, while independent completion polling continues
   finish();
   await vi.advanceTimersByTimeAsync(25_000);
   expect(mocks.transcript.mock.calls.length).toBeGreaterThan(1);
+});
+
+it("honors a five-minute high-load backoff without clamping it to one minute", async () => {
+  const times: number[] = [];
+  const original = mocks.transcript.getMockImplementation()!;
+  mocks.transcript.mockImplementation(async () => { times.push(Date.now()); return { updatedChannels: 1, postedMessages: 1 }; });
+  try {
+    await start(300_000);
+    await vi.advanceTimersByTimeAsync(1_300_000);
+    const intervals = times.slice(1).map((time, index) => time - times[index]);
+    expect(intervals.slice(-2)).toEqual([300_000, 300_000]);
+    expect(intervals.every(interval => interval <= 300_000)).toBe(true);
+  } finally { mocks.transcript.mockImplementation(original); }
 });
