@@ -161,7 +161,7 @@ function maintenanceAgent(input: string | undefined): "codex" | "claude" {
   return input?.trim().toLowerCase() === "claude" ? "claude" : "codex";
 }
 
-export function shouldSkipBackgroundPolling(input: {
+export function isBackgroundLoadHigh(input: {
   loadAverage: number;
   cpuCount: number;
   maxNormalizedLoad: number;
@@ -200,12 +200,12 @@ export function recordBackgroundPollResult(
     baseIntervalMs: number;
     maxIntervalMs: number;
     changed: boolean;
-    skippedForLoad?: boolean;
+    underLoad?: boolean;
   },
 ): void {
   const maxIntervalMs = Math.max(input.baseIntervalMs, input.maxIntervalMs);
   const nextIntervalMs =
-    input.changed && !input.skippedForLoad
+    input.changed && !input.underLoad
       ? input.baseIntervalMs
       : Math.min(maxIntervalMs, Math.max(input.baseIntervalMs, state.currentIntervalMs * 2));
 
@@ -981,16 +981,7 @@ export async function startBot(): Promise<void> {
           return;
         }
 
-        if (shouldSkipBackgroundPolling(currentBackgroundLoadInput())) {
-          recordBackgroundPollResult(pollState, {
-            now,
-            baseIntervalMs: TRANSCRIPT_SYNC_INTERVAL_MS,
-            maxIntervalMs: BACKGROUND_POLL_MAX_INTERVAL_MS,
-            changed: false,
-            skippedForLoad: true,
-          });
-          return;
-        }
+        const underLoad = isBackgroundLoadHigh(currentBackgroundLoadInput());
 
         const guild = resolveReadyGuildSurface(client, connectConfig?.discord.guildId, answerCopyStore, locale);
 
@@ -1004,9 +995,9 @@ export async function startBot(): Promise<void> {
           recordBackgroundPollResult(pollState, {
             now: Date.now(),
             baseIntervalMs: TRANSCRIPT_SYNC_INTERVAL_MS,
-            // Public progress should appear even for a short turn after an
-            // idle period. Keep load/error backoff, not idle backoff, here.
-            maxIntervalMs: TRANSCRIPT_SYNC_INTERVAL_MS,
+            // High host load may slow polling, but must never starve public updates.
+            maxIntervalMs: underLoad ? BACKGROUND_POLL_MAX_INTERVAL_MS : TRANSCRIPT_SYNC_INTERVAL_MS,
+            underLoad,
             changed: result.updatedChannels > 0 || result.postedMessages > 0,
           });
         })()
@@ -1040,16 +1031,7 @@ export async function startBot(): Promise<void> {
           return;
         }
 
-        if (shouldSkipBackgroundPolling(currentBackgroundLoadInput())) {
-          recordBackgroundPollResult(pollState, {
-            now,
-            baseIntervalMs: TASK_NOTIFICATION_INTERVAL_MS,
-            maxIntervalMs: BACKGROUND_POLL_MAX_INTERVAL_MS,
-            changed: false,
-            skippedForLoad: true,
-          });
-          return;
-        }
+        const underLoad = isBackgroundLoadHigh(currentBackgroundLoadInput());
 
         const guild = resolveReadyGuildSurface(client, connectConfig?.discord.guildId, answerCopyStore, locale);
 
@@ -1064,6 +1046,7 @@ export async function startBot(): Promise<void> {
               now: Date.now(),
               baseIntervalMs: TASK_NOTIFICATION_INTERVAL_MS,
               maxIntervalMs: BACKGROUND_POLL_MAX_INTERVAL_MS,
+              underLoad,
               changed: result.initialized || result.notifiedSessions > 0,
             });
           })
@@ -1097,16 +1080,7 @@ export async function startBot(): Promise<void> {
           return;
         }
 
-        if (shouldSkipBackgroundPolling(currentBackgroundLoadInput())) {
-          recordBackgroundPollResult(pollState, {
-            now,
-            baseIntervalMs: CLAUDE_SESSION_SYNC_INTERVAL_MS,
-            maxIntervalMs: BACKGROUND_POLL_MAX_INTERVAL_MS,
-            changed: false,
-            skippedForLoad: true,
-          });
-          return;
-        }
+        const underLoad = isBackgroundLoadHigh(currentBackgroundLoadInput());
 
         const guild = resolveReadyGuildSurface(client, connectConfig?.discord.guildId, answerCopyStore, locale);
 
@@ -1133,6 +1107,7 @@ export async function startBot(): Promise<void> {
               now: Date.now(),
               baseIntervalMs: CLAUDE_SESSION_SYNC_INTERVAL_MS,
               maxIntervalMs: BACKGROUND_POLL_MAX_INTERVAL_MS,
+              underLoad,
               changed:
                 (syncResult?.createdThreads ?? 0) > 0 ||
                 (notifyResult?.notifiedSessions ?? 0) > 0 ||

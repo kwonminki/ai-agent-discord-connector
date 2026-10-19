@@ -167,7 +167,7 @@ CONNECT_BACKGROUND_MAX_LOAD=0.7
 CONNECT_DIRECT_WORKER_POLL_INTERVAL_MS=5000
 ```
 
-Background polling backs off when there are no new Codex events, and it skips expensive Codex log scans while normalized system load is above `CONNECT_BACKGROUND_MAX_LOAD`. Set `CONNECT_BACKGROUND_MAX_LOAD=0` to disable load-based skipping.
+Background polling slows down when normalized system load exceeds `CONNECT_BACKGROUND_MAX_LOAD`, but continues scanning at a bounded interval. The wait between completed scans is capped by `CONNECT_BACKGROUND_POLL_MAX_INTERVAL_MS` (20 seconds by default), plus the next timer tick and scan/delivery time. A slow scan is never overlapped by another scan of the same kind. Set `CONNECT_BACKGROUND_MAX_LOAD=0` to disable load-based backoff. Completion polling also backs off while idle; realtime transcript polling returns to its base interval when load falls.
 
 The Direct Worker wakes immediately through a filesystem signal for new jobs, steering, approvals, and agent questions. `CONNECT_DIRECT_WORKER_POLL_INTERVAL_MS` is only the fallback interval when file watching is unavailable, so raising it reduces idle scans without slowing normal interaction.
 

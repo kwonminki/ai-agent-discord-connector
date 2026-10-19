@@ -1310,7 +1310,7 @@ sync mode realtime
 - Discord에서 직접 실행 중인 세션은 기존 스트리밍 메시지와 중복되지 않도록 transcript 기준점만 갱신합니다.
 - `realtime`은 새 Discord 채널을 자동 생성하지 않습니다. 열려 있지 않은 Codex 세션을 Discord로 가져오려면 admin 채널에서 `sync` 또는 `/sync`를 명시적으로 실행합니다.
 - 폴링 간격은 `CONNECT_TRANSCRIPT_SYNC_INTERVAL_MS`로 조정할 수 있습니다. 변화가 없거나 시스템 부하가 높으면 백그라운드 스캔은 자동으로 최대 `CONNECT_BACKGROUND_POLL_MAX_INTERVAL_MS`까지 늦춰집니다.
-- `CONNECT_BACKGROUND_MAX_LOAD`는 CPU core 수로 나눈 1분 load average 기준입니다. 기본값은 `0.7`이고, `0`으로 설정하면 부하 기반 스킵을 끕니다.
+- `CONNECT_BACKGROUND_MAX_LOAD`는 CPU core 수로 나눈 1분 load average 기준입니다. 기본값은 `0.7`이고, `0`으로 설정하면 부하 기반 지연을 끕니다. 부하가 높아도 스캔을 계속 건너뛰지 않으며, 완료 후 대기 시간을 `CONNECT_BACKGROUND_POLL_MAX_INTERVAL_MS`(기본 20초)까지만 늘립니다. 실제 주기에는 다음 타이머 틱과 읽기·전송 시간이 더해집니다. 같은 종류의 스캔은 중복 실행하지 않습니다.
 
 처음 동기화된 채널은 과거 로그를 한꺼번에 쏟아내지 않도록 기준점만 잡고, 이후 새 transcript만 올립니다.
 

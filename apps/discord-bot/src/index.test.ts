@@ -34,7 +34,7 @@ describe("bot entrypoint", () => {
       shouldDeferBotRestart,
       shouldRunBackgroundPoll,
       shouldRunRealtimeSessionAutosync,
-      shouldSkipBackgroundPolling,
+      isBackgroundLoadHigh,
     } = await import("./index.js");
 
     expect(resolveRealtimeIntervalMs(undefined, 1_000)).toBe(1_000);
@@ -44,8 +44,9 @@ describe("bot entrypoint", () => {
     expect(resolveBackgroundMaxNormalizedLoad(undefined, 0.7)).toBe(0.7);
     expect(resolveBackgroundMaxNormalizedLoad("0", 0.7)).toBe(0);
     expect(resolveBackgroundMaxNormalizedLoad("2", 0.7)).toBe(2);
-    expect(shouldSkipBackgroundPolling({ loadAverage: 7, cpuCount: 10, maxNormalizedLoad: 0.7 })).toBe(true);
-    expect(shouldSkipBackgroundPolling({ loadAverage: 3, cpuCount: 10, maxNormalizedLoad: 0.7 })).toBe(false);
+    expect(isBackgroundLoadHigh({ loadAverage: 7, cpuCount: 10, maxNormalizedLoad: 0.7 })).toBe(true);
+    expect(isBackgroundLoadHigh({ loadAverage: 3, cpuCount: 10, maxNormalizedLoad: 0.7 })).toBe(false);
+    expect(isBackgroundLoadHigh({ loadAverage: 149, cpuCount: 48, maxNormalizedLoad: 0 })).toBe(false);
     expect(shouldDeferBotRestart({ activeCount: 1, pendingCount: 0 })).toBe(true);
     expect(shouldDeferBotRestart({ activeCount: 0, pendingCount: 1 })).toBe(true);
     expect(shouldDeferBotRestart({ activeCount: 0, pendingCount: 0 })).toBe(false);
