@@ -53,9 +53,9 @@ export function agentGuidancePanel(
     ephemeral: true,
     embeds: [
       {
-        title: "스타일 · 스킬",
+        title: "커넥터 스타일 · 스킬",
         color: 0x3498db,
-        description: `${isParent ? "이 부모 채널의 기본값" : "이 대화의 설정"} · 변경은 다음 요청부터 적용됩니다.\n스타일: **${guidance.style ?? "끔"}**\n${AGENT_SKILLS.map((skill) => `${guidance.skills.includes(skill.id) ? "✅" : "⬜"} ${skill.label}`).join("\n")}\n\n\`/set_skill\`로 개별 설정 · \`/pure\`로 모두 끄기 · \`/skills_reset\`으로 상속/기본값 복원`,
+        description: `${isParent ? "이 부모 채널의 기본값" : "이 대화의 설정"} · 변경은 다음 요청부터 적용됩니다.\n스타일: **${guidance.style ?? "끔"}**\n${AGENT_SKILLS.map((skill) => `${guidance.skills.includes(skill.id) ? "✅" : "⬜"} ${skill.label}`).join("\n")}\n\n\`/set_skill\`로 개별 설정 · \`/pure\`로 커넥터 안내만 끄기 · \`/skills_reset\`으로 상속/기본값 복원\n로컬 Codex·Claude에 설치한 스킬은 이 설정과 별개로 기본 탐색 규칙에 따라 사용할 수 있습니다.`,
       },
     ],
     components: [

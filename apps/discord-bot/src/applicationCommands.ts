@@ -150,7 +150,7 @@ export const DISCORD_APPLICATION_COMMANDS: readonly DiscordApplicationCommandDef
   },
   {
     name: "set_skill",
-    description: "기본 스킬을 개별적으로 켜거나 끕니다.",
+    description: "커넥터 추가 스킬을 개별적으로 켜거나 끕니다.",
     options: [
       stringOption({
         name: "skill", description: "스킬", required: true,

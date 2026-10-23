@@ -22,7 +22,7 @@ With Codex running in Orca, **reply in its synced Discord thread**. The gateway 
 
 ## Agent styles and skills
 
-The default is `attention-kind` plus Karpathy coding guidelines and verification before completion. `/set_style` opens a dropdown; `/set_skill` toggles individual skills; `/pure` disables connector-added guidance; `/skills_reset` restores inheritance/defaults. Claude Code uses native output styles and Codex reads linked files through a generated `AGENTS.md`. Preferences persist across restarts. See the [usage and extension guide (Korean)](docs/agent-guidance.ko.md) and [vendored sources and licenses](agent-assets/README.md).
+The default output style is `attention-kind`; connector-added skills start disabled. `/set_style` opens a dropdown; `/set_skill` enables optional guidance; `/pure` disables connector-added guidance; `/skills_reset` restores inheritance/defaults. Explicit preferences persist across restarts. Skills installed for the local Codex or Claude Code user remain available through the CLI's native discovery and do not need registration in `/set_skill`. See the [native skills and server setup guide](docs/managed-hosts.en.md), [usage and extension guide (Korean)](docs/agent-guidance.ko.md) and [vendored sources and licenses](agent-assets/README.md).
 
 ## v2.0 Release
 
@@ -82,6 +82,8 @@ Ask me only for required account actions, one step at a time, and configure and 
 The agent detects the conversation language and operating system, asks whether to connect Codex, Claude Code, or both, then configures only the required Discord channels and local services. After the first computer is ready, it will ask whether you want to connect any additional macOS, Windows, or Ubuntu machines and whether to enable Agent Relay conversations.
 
 ### Current deployment model
+
+**Connecting another server over SSH?** Follow [managed host setup](docs/managed-hosts.en.md). It separates reusable Discord access from the new host's identity and channels, provides retryable provisioning and local diagnostics, and generates separate Linux user services. These commands are in this source change and are not yet included in the published v2.3.1 package.
 
 The current deployment model is self-hosted in a trusted personal environment. The host running each Discord Gateway and the optional Coordinator needs the corresponding bot token. After the user creates a private Discord server and invites the bot applications, the installation agent can configure the roles, channels, permissions, slash commands, local worker, and services.
 

@@ -830,7 +830,7 @@ export async function terminateManagedAppServer(
 // ---------------------------------------------------------------------------
 // Persistent managed app-server pool
 //
-// One `codex app-server` process is kept per (codex command, CODEX_HOME) and
+// One `codex app-server` process is kept per command and native user/config home,
 // shared by every prompt instead of booting and killing a server per Discord
 // message. The server multiplexes threads, so concurrent jobs simply open
 // their own WebSocket connections against the same process.
@@ -857,7 +857,11 @@ function persistentCodexAppServerEnabled(input: RunCodexAppServerPromptInput): b
 }
 
 function persistentCodexAppServerKey(input: RunCodexAppServerPromptInput): string {
-  return JSON.stringify([resolveCodexCommand(input), input.codexHome?.trim() ?? ""]);
+  return JSON.stringify([
+    resolveCodexCommand(input),
+    input.codexHome || process.env.CODEX_HOME || "",
+    os.homedir(),
+  ]);
 }
 
 async function disposePersistentCodexAppServer(server: PersistentCodexAppServer): Promise<void> {

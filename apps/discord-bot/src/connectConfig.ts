@@ -14,6 +14,7 @@ export interface DirectConnectConfig {
     locale?: ConnectorLocale;
   };
   direct: {
+    hostInstallationId?: string;
     computerId: string;
     computerDisplayName: string;
     workspaceId: string;
@@ -50,14 +51,18 @@ export interface HubConnectConfig {
 
 export type ConnectConfig = DirectConnectConfig | HubConnectConfig;
 
-function defaultConfigPath(): string {
+export function resolveConnectConfigPath(): string {
   return path.resolve(process.env.CONNECT_CONFIG_PATH ?? ".connect/config.json");
 }
 
-export async function loadConnectConfig(configPath = defaultConfigPath()): Promise<ConnectConfig | null> {
+export async function loadConnectConfig(configPath = resolveConnectConfigPath()): Promise<ConnectConfig | null> {
   try {
     return JSON.parse(await readFile(configPath, "utf8")) as ConnectConfig;
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      // JSON.parse errors can quote credential-bearing source text.
+      throw new Error("Invalid connector configuration JSON. Check the file selected by CONNECT_CONFIG_PATH.");
+    }
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return null;
     }

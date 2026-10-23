@@ -42,7 +42,11 @@ it.each([
     const controlApi = { listCodexSessions, createCategoryMapping: vi.fn(), createManagedChannel: vi.fn(), linkCodexSession: vi.fn() };
     const createHandler = vi.fn((_input: CreateDiscordMessageHandlerInput) => Object.assign(async () => {}, { drainRestoredMessages() {} }));
     vi.stubEnv("CONNECT_DESKTOP_INPUT_ENABLED", "false");
-    vi.doMock("./connectConfig.js", () => ({ loadConnectConfig: async () => ({ mode: "direct", discord: { token: "test-token", guildId: "guild", allowedRoleIds: ["operator"] }, direct: { computerId: "pc", computerDisplayName: "PC", workspaceId: "workspace", workspaceRoot: home, workspaceDisplayName: "repo", channelId: "admin", channelMode: "shell-admin", timeoutMs: 1000, codexHome: home, orca: { enabled: false } } }) }));
+    vi.stubEnv("CONNECT_CONFIG_PATH", path.join(home, ".connect", "config.json"));
+    vi.doMock("./connectConfig.js", async (importOriginal) => ({
+      ...await importOriginal<typeof import("./connectConfig.js")>(),
+      loadConnectConfig: async () => ({ mode: "direct", discord: { token: "test-token", guildId: "guild", allowedRoleIds: ["operator"] }, direct: { computerId: "pc", computerDisplayName: "PC", workspaceId: "workspace", workspaceRoot: home, workspaceDisplayName: "repo", channelId: "admin", channelMode: "shell-admin", timeoutMs: 1000, codexHome: home, orca: { enabled: false } } }),
+    }));
     vi.doMock("./directState.js", async () => ({ ...await vi.importActual<typeof import("./directState.js")>("./directState.js"), createDirectSyncStateStore: () => stateStore }));
     vi.doMock("./directControlClient.js", () => ({ createDirectControlClient: () => controlApi }));
     vi.doMock("./messageHandler.js", () => ({ createDiscordMessageHandler: createHandler }));

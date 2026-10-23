@@ -3,6 +3,7 @@ import { createDesktopSessionBridge } from "./desktopSessionBridge.js";
 import { createDesktopSessionClient } from "./desktopSessionClient.js";
 import { watchDiscordGateway } from "./discordGatewayWatchdog.js";
 import os from "node:os";
+import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
@@ -48,7 +49,8 @@ import {
   notifyClaudeCodeTaskCompletions,
 } from "./claudeTaskNotifications.js";
 import { deliverClaudeIdleNotifications } from "./claudeIdleNotifications.js";
-import { loadConnectConfig } from "./connectConfig.js";
+import { loadConnectConfig, resolveConnectConfigPath } from "./connectConfig.js";
+import { assertManagedHost } from "../../connect-cli/src/host.js";
 import { createControlApiClient } from "./controlApiClient.js";
 import { createDirectSyncStateStore } from "./directState.js";
 import { createDirectControlClient } from "./directControlClient.js";
@@ -314,7 +316,15 @@ function resolveReadyGuildSurface(
 }
 
 export async function startBot(): Promise<void> {
-  const connectConfig = await loadConnectConfig();
+  const configPath = resolveConnectConfigPath();
+  const connectConfig = await loadConnectConfig(configPath);
+  await assertManagedHost(path.dirname(path.dirname(configPath)), connectConfig);
+  if (
+    connectConfig?.mode === "direct" && connectConfig.direct.hostInstallationId !== undefined &&
+    process.env.DISCORD_TOKEN !== undefined && process.env.DISCORD_TOKEN !== connectConfig.discord.token
+  ) {
+    throw new Error("DISCORD_TOKEN conflicts with this managed host's provisioned bot. Remove the environment override and use this host's configured access.");
+  }
   const token = process.env.DISCORD_TOKEN ?? connectConfig?.discord.token;
   const locale = resolveConnectorLocale(
     process.env.CONNECT_LOCALE ?? connectConfig?.discord.locale,

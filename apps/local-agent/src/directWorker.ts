@@ -2,6 +2,8 @@ import { watch, type FSWatcher } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertManagedHost } from "../../connect-cli/src/host.js";
+import { loadConnectConfig, resolveConnectConfigPath } from "../../discord-bot/src/connectConfig.js";
 
 import {
   disposeCodexPersistentAppServers,
@@ -195,6 +197,9 @@ export async function startDirectWorker(options: {
     content?: string;
   }) => Promise<unknown>;
 } = {}): Promise<{ stop(): Promise<void> }> {
+  const configPath = resolveConnectConfigPath();
+  const connectConfig = await loadConnectConfig(configPath);
+  await assertManagedHost(path.dirname(path.dirname(configPath)), connectConfig);
   const store = options.store ?? createDirectWorkerStore();
   const releaseLock = await acquireWorkerLock(store.rootPath);
   const pollIntervalMs = options.pollIntervalMs ?? positiveInteger(

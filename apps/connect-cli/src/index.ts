@@ -16,6 +16,8 @@ import {
   type ConnectMode,
   writeSetupFiles,
 } from "./config.js";
+import { assertManagedHost, readManagedHost } from "./host.js";
+import { HOST_USAGE, runHostCommand } from "./hostCommands.js";
 
 export const BOT_RELOAD_EXIT_CODE = 42;
 
@@ -180,6 +182,9 @@ export function discordSetupGuide(mode: ConnectMode, locale: ConnectorLocale = "
 
 async function setup(flags: Map<string, string | boolean>) {
   const mode = (flag(flags, "mode") ?? (flags.has("hub") ? "hub" : "direct")) as ConnectMode;
+  if (await readManagedHost(process.cwd())) {
+    throw new Error("Legacy setup cannot overwrite a managed host. Use host provision with its original spec and access file.");
+  }
   const locale = resolveConnectorLocale(flag(flags, "locale") ?? process.env.CONNECT_LOCALE);
 
   console.info(discordSetupGuide(mode, locale).join("\n"));
@@ -260,7 +265,11 @@ async function status() {
 }
 
 async function start(flags: Map<string, string | boolean>) {
+  await assertManagedHost(process.cwd());
   const mode = (flag(flags, "mode") ?? (flags.has("hub") ? "hub" : "direct")) as ConnectMode;
+  if (mode !== "direct" && await readManagedHost(process.cwd())) {
+    throw new Error("Managed hosts support direct mode only; Hub mode cannot use a managed host configuration.");
+  }
   const requestedComponent = flag(flags, "component") ?? "all";
   if (mode === "hub" && requestedComponent !== "all") {
     throw new Error("--component is supported only in direct mode.");
@@ -347,6 +356,10 @@ async function start(flags: Map<string, string | boolean>) {
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
+  if (args[0] === "host") {
+    await runHostCommand(args.slice(1));
+    return;
+  }
   const { command, flags } = parseArgs(args);
 
   if (command === "setup" || command === "install" || command === "init") {
@@ -374,6 +387,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   console.info("  cdc start --direct --component worker");
   console.info("  cdc start --direct --component relay");
   console.info("  cdc status");
+  for (const usage of HOST_USAGE) console.info(`  ${usage}`);
 }
 
 const isDirectExecution =

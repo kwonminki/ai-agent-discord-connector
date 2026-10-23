@@ -1,4 +1,6 @@
 import os from "node:os";
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import { afterEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -17,16 +19,24 @@ vi.mock("./directWorkerClient.js", () => ({ createDirectWorkerClient: () => null
 vi.mock("./durableRequestStore.js", () => ({ createDurableDiscordRequestStore: () => ({ list: async () => [] }) }));
 vi.mock("./directState.js", () => ({ createDirectSyncStateStore: () => ({ read: async () => ({ transcriptSyncMode: "realtime", sessionChannels: [{ codexSessionId: "session", discordChannelId: "thread" }], scheduledCommands: [] }) }) }));
 vi.mock("./directControlClient.js", () => ({ createDirectControlClient: () => ({ listCodexSessions: async () => ({ result: [] }) }) }));
-vi.mock("./connectConfig.js", () => ({ loadConnectConfig: async () => ({ mode: "direct", discord: { token: "test", guildId: "guild", allowedRoleIds: [] }, direct: { computerId: "pc", channelId: "admin", claudeChannelId: "claude", workspaceRoot: "/repo", orca: { enabled: false } } }) }));
+vi.mock("./connectConfig.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./connectConfig.js")>(),
+  loadConnectConfig: async () => ({ mode: "direct", discord: { token: "test", guildId: "guild", allowedRoleIds: [] }, direct: { computerId: "pc", channelId: "admin", claudeChannelId: "claude", workspaceRoot: "/repo", orca: { enabled: false } } }),
+}));
 vi.mock("./scheduler.js", () => ({ runDueScheduledCommands: vi.fn(async () => {}) }));
 
-afterEach(() => {
+const temporaryRoots: string[] = [];
+afterEach(async () => {
   vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.resetModules();
   vi.doUnmock("./discordClient.js");
   for (const mock of Object.values(mocks)) mock.mockClear();
+  await Promise.all(temporaryRoots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
 async function start(maxIntervalMs = 20_000) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "background-polling-"));
+  temporaryRoots.push(root);
+  vi.stubEnv("CONNECT_CONFIG_PATH", path.join(root, ".connect", "config.json"));
   vi.useFakeTimers(); vi.setSystemTime(0);
   vi.stubEnv("CONNECT_BACKGROUND_MAX_LOAD", "0.7");
   vi.stubEnv("CONNECT_BACKGROUND_POLL_MAX_INTERVAL_MS", String(maxIntervalMs));

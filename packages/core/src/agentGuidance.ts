@@ -31,14 +31,14 @@ export const AGENT_STYLES = [
 export const AGENT_SKILLS = [
   {
     id: "karpathy-guidelines",
-    defaultEnabled: true,
+    defaultEnabled: false,
     label: "Karpathy coding guidelines",
     file: "vendor/andrej-karpathy-skills/skills/karpathy-guidelines/SKILL.md",
     when: "Before writing, reviewing, debugging, or refactoring code, read this file and apply it. For non-coding requests it is not required.",
   },
   {
     id: "verification-before-completion",
-    defaultEnabled: true,
+    defaultEnabled: false,
     label: "Verification before completion",
     file: "vendor/superpowers/skills/verification-before-completion/SKILL.md",
     when: "Before claiming work is complete or successful, read this file and perform the relevant verification. Report what was actually checked and any remaining gaps.",

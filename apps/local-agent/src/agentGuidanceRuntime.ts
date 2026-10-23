@@ -37,7 +37,7 @@ export async function prepareAgentGuidance(
     })),
   );
   const digest = createHash("sha256")
-    .update(JSON.stringify({ version: 1, selected, sources }))
+    .update(JSON.stringify({ version: 2, selected, sources }))
     .digest("hex");
   const root = path.resolve(
     options.runtimeRoot ??
@@ -67,12 +67,13 @@ export async function prepareAgentGuidance(
       "# Connector guidance for this request",
       "",
       "This selection replaces earlier connector-added styles and skills for this request. Preserve the user's request, project AGENTS.md/CLAUDE.md, and higher-priority instructions. Do not infer personal or medical facts from a style's wording. Use the user's language.",
+      "These settings control connector-added guidance only. Skills installed in the agent's native user or project directories remain available under the agent's normal discovery and invocation rules; this selection does not disable or replace them.",
       "",
       style
         ? `Style: [${style.id}](./raw/${style.id}.md). Codex: read this linked file before answering. Claude Code: this style is supplied as a native output style.`
         : "No connector output style is enabled. Do not continue an earlier connector style solely because it occurs in conversation history.",
       "",
-      "## Enabled skills",
+      "## Enabled connector skills",
       ...skills.map(
         (skill) => `- [${skill.id}](./raw/${skill.id}.md): ${skill.when}`,
       ),
@@ -125,5 +126,5 @@ export function guidancePrompt(
   prompt: string,
 ): string {
   if (/^\/compact(?:\s|$)/i.test(prompt.trim())) return prompt;
-  return `Connector guidance selection for this request: read [AGENTS.md](<${prepared.agentsPath}>) and its applicable linked files before doing the task. This selection supersedes earlier connector selections; preserve project instructions.\n\n${prompt}`;
+  return `Connector guidance selection for this request: read [AGENTS.md](<${prepared.agentsPath}>) and its applicable linked files before doing the task. This selection supersedes earlier connector selections; preserve project instructions and native installed skills.\n\n${prompt}`;
 }

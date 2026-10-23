@@ -171,6 +171,8 @@ The same bot token may be used by multiple computers, but enabled agent parent c
 
 ## Additional-machine onboarding
 
+For a new SSH target, use the [managed host workflow](managed-hosts.en.md). Inspect an existing installation before changing it; transfer only the reusable Discord access, generate the target's identity and parent channels, preserve native CLI skill discovery, and distinguish local checks from a live Discord round trip. Do not copy another host's `.connect/` or `.env`.
+
 After the first computer is installed and verified, do not close the conversation with a completion report until you ask whether the user wants to connect another machine.
 
 ```text

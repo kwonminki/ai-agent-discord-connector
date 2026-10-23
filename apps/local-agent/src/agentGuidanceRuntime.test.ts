@@ -45,10 +45,11 @@ describe("vendored agent guidance", () => {
   it("creates independent atomic snapshots and links only enabled raw instructions", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "guidance-runtime-"));
     try {
-      const [a, b, pure] = await Promise.all([
+      const [a, b, pure, explicit] = await Promise.all([
         prepareAgentGuidance(DEFAULT_AGENT_GUIDANCE, { runtimeRoot: root }),
         prepareAgentGuidance(DEFAULT_AGENT_GUIDANCE, { runtimeRoot: root }),
         prepareAgentGuidance(PURE_AGENT_GUIDANCE, { runtimeRoot: root }),
+        prepareAgentGuidance({ ...DEFAULT_AGENT_GUIDANCE, skills: ["karpathy-guidelines"] }, { runtimeRoot: root }),
       ]);
       expect(a.agentsPath).toBe(b.agentsPath);
       expect(a.agentsPath).not.toBe(pure.agentsPath);
@@ -60,13 +61,19 @@ describe("vendored agent guidance", () => {
             "utf8",
           ),
         ).resolves.toBeTruthy();
-      expect(instructions).toContain(
+      expect(instructions).toContain("No connector skills are enabled");
+      expect(instructions).toContain("native user or project directories remain available");
+      expect(instructions).not.toContain("karpathy-guidelines");
+      expect(instructions).not.toContain("verification-before-completion");
+      expect(await readFile(explicit.agentsPath, "utf8")).toContain(
         "Before writing, reviewing, debugging, or refactoring code",
       );
+      expect(await readFile(path.join(path.dirname(explicit.agentsPath), "raw", "karpathy-guidelines.md"), "utf8")).toBeTruthy();
       const pureText = await readFile(pure.agentsPath, "utf8");
       expect(pureText).not.toContain("./raw/");
       expect(pure.claudePluginPath).toBeNull();
-      expect(await readdir(root)).toHaveLength(2);
+      expect(pureText).toContain("native user or project directories remain available");
+      expect(await readdir(root)).toHaveLength(3);
       const style = await readFile(
         path.join(a.claudePluginPath!, "output-styles/attention-kind.md"),
         "utf8",

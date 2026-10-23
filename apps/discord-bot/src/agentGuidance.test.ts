@@ -57,12 +57,30 @@ describe("agent guidance preferences", () => {
     });
   });
 
+  it("defaults connector skills off without overwriting explicit persisted choices", async () => {
+    const { file, store } = await storeAt();
+    expect(DEFAULT_AGENT_GUIDANCE).toEqual({ style: "attention-kind", skills: [] });
+    const skills = ["karpathy-guidelines", "verification-before-completion"];
+    await writeFile(file, JSON.stringify({ version: 1, channels: {
+      explicit: { skills }, styleOnly: { style: "spartan" },
+    } }));
+    expect((await store.get({ channelId: "explicit" })).skills).toEqual(skills);
+    expect((await store.get({ channelId: "child", parentId: "explicit" })).skills).toEqual(skills);
+    expect((await store.get({ channelId: "styleOnly" })).skills).toEqual([]);
+    await store.reset({ channelId: "explicit" });
+    expect((await store.get({ channelId: "explicit" })).skills).toEqual([]);
+    await store.setSkill({ channelId: "styleOnly" }, "karpathy-guidelines", true);
+    expect((await store.get({ channelId: "styleOnly" })).skills).toEqual(["karpathy-guidelines"]);
+    expect(agentGuidancePanel(DEFAULT_AGENT_GUIDANCE, false).embeds![0].description)
+      .toContain("로컬 Codex·Claude에 설치한 스킬은 이 설정과 별개");
+  });
+
   it("serializes concurrent changes and rejects unknown files without losing settings", async () => {
     const { file, store } = await storeAt();
     const scope = { channelId: "thread" };
     await Promise.all([
       store.setStyle(scope, "spartan"),
-      store.setSkill(scope, "karpathy-guidelines", false),
+      store.setSkill(scope, "verification-before-completion", true),
     ]);
     expect(await store.get(scope)).toEqual({
       style: "spartan",

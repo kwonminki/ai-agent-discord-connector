@@ -20,6 +20,8 @@ export interface DirectConnectConfig {
   discord: DiscordConfig;
   direct: {
     computerId: string;
+    /** Present only for a host prepared and provisioned by the noninteractive host commands. */
+    hostInstallationId?: string;
     computerDisplayName: string;
     workspaceId: string;
     workspaceRoot: string;

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { guidancePrompt, prepareAgentGuidance, type PreparedAgentGuidance } from "./agentGuidanceRuntime.js";
 import type { AgentGuidance } from "../../../packages/core/src/agentGuidance.js";
 import { spawn } from "node:child_process";
@@ -521,6 +522,8 @@ function persistentSessionsEnabled(input: RunClaudePromptInput): boolean {
 function persistentSessionSignature(input: RunClaudePromptInput): string {
   return JSON.stringify([
     resolveClaudeCommand(input),
+    os.homedir(),
+    process.env.CLAUDE_CONFIG_DIR ?? "",
     input.cwd,
     resolvePermissionMode(input) ?? "",
     input.model?.trim() ?? "",

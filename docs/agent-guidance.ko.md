@@ -1,6 +1,8 @@
 # Discord 스타일 · 스킬
 
-기본값은 `attention-kind` 스타일과 `karpathy-guidelines`, `verification-before-completion` 두 스킬입니다. 원문은 저장소의 `agent-assets/vendor/`에 고정해 두며, 실행 중 GitHub에서 내려받지 않습니다.
+기본값은 `attention-kind` 스타일이며 커넥터 추가 스킬은 모두 꺼져 있습니다. `karpathy-guidelines`, `verification-before-completion`은 `/set_skill`로 선택할 때만 추가합니다. 명시적으로 저장한 선택은 유지됩니다. 원문은 저장소의 `agent-assets/vendor/`에 고정해 두며, 실행 중 GitHub에서 내려받지 않습니다.
+
+서버의 Codex·Claude Code에 설치한 네이티브 스킬은 이 카탈로그와 별개로 사용할 수 있습니다. `/pure`로 네이티브 스킬까지 비활성화되지는 않습니다. 실행 계정·홈·작업 폴더 확인 방법은 [서버 설치 표준 절차](managed-hosts.en.md)를 참고하세요.
 
 ## 명령
 
@@ -43,7 +45,7 @@ Worker는 선택된 원문을 복사한 불변 디렉터리와 그 파일들을 
 
 설정이 달라지면 다음 요청 때 해당 대화의 Claude 프로세스를 다시 시작하고 같은 session ID로 재개합니다. 다른 대화의 프로세스는 건드리지 않습니다. **프로세스 안에만 있던 예약·백그라운드 작업은 이 재시작의 영향을 받을 수 있습니다.** 프로젝트나 사용자 전역의 `.claude/settings.json`, `CLAUDE.md`는 변경하지 않습니다. 네이티브 `/compact` 명령 앞에는 링크를 붙이지 않습니다.
 
-### 기본 스킬의 사용 시점
+### 선택한 추가 스킬의 사용 시점
 
 - `karpathy-guidelines`: 코드를 작성·리뷰·디버깅·리팩터링하기 전에 원문을 읽도록 지시합니다. 일반 대화에서는 불필요한 코딩 절차를 요구하지 않습니다.
 - `verification-before-completion`: 완료·성공을 주장하기 전에 원문을 읽고 작업에 맞는 검증을 수행하도록 지시합니다. 실행하지 않은 검사나 남은 한계를 분명히 알리게 합니다.
