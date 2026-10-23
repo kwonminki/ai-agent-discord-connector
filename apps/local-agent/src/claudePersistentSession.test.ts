@@ -439,7 +439,7 @@ describe("persistent Claude Code sessions", () => {
       controlKey: "guidance-session", claudeCommand: fake.fakeClaude, persistentSession: true,
       settings: settingsMode === "inline" ? originalSettings : "./claude-settings.json" };
     try {
-      const first = await runClaudePrompt({ ...base, guidance: DEFAULT_AGENT_GUIDANCE });
+      const first = await runClaudePrompt({ ...base, guidance: { ...DEFAULT_AGENT_GUIDANCE, style: "attention-kind" } });
       expect(first.status).toBe("completed");
       const firstInput = JSON.parse(await readFile(fake.inputsPath, "utf8"));
       expect(firstInput[0].message.content[0].text).toContain("AGENTS.md");

@@ -22,7 +22,7 @@ With Codex running in Orca, **reply in its synced Discord thread**. The gateway 
 
 ## Agent styles and skills
 
-The default output style is `attention-kind`; connector-added skills start disabled. `/set_style` opens a dropdown; `/set_skill` enables optional guidance; `/pure` disables connector-added guidance; `/skills_reset` restores inheritance/defaults. Explicit preferences persist across restarts. Skills installed for the local Codex or Claude Code user remain available through the CLI's native discovery and do not need registration in `/set_skill`. See the [native skills and server setup guide](docs/managed-hosts.en.md), [usage and extension guide (Korean)](docs/agent-guidance.ko.md) and [vendored sources and licenses](agent-assets/README.md).
+Connector-added output styles and skills are disabled by default. With nothing selected, the connector adds no guidance file, prompt prefix, or output-style plugin. `/set_style` opens a dropdown; `/set_skill` enables optional guidance; `/pure` disables connector-added guidance; `/skills_reset` restores inheritance/defaults. Explicit preferences persist across restarts. Skills installed for the local Codex or Claude Code user remain available through the CLI's native discovery and do not need registration in `/set_skill`. See the [native skills and server setup guide](docs/managed-hosts.en.md), [usage and extension guide (Korean)](docs/agent-guidance.ko.md) and [vendored sources and licenses](agent-assets/README.md).
 
 ## v2.0 Release
 

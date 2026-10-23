@@ -42,17 +42,30 @@ describe("vendored agent guidance", () => {
       expect(recordedPaths.has(entry.file)).toBe(true);
     }
   });
-  it("creates independent atomic snapshots and links only enabled raw instructions", async () => {
+  it("leaves empty selections untouched without creating a guidance directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "guidance-disabled-"));
+    try {
+      for (const selection of [DEFAULT_AGENT_GUIDANCE, PURE_AGENT_GUIDANCE]) {
+        const prepared = await prepareAgentGuidance(selection, { runtimeRoot: path.join(root, "unused"), assetsRoot: path.join(root, "nonexistent-assets") });
+        expect(prepared).toBeNull();
+        expect(guidancePrompt(prepared, "  Original user request\n")).toBe("  Original user request\n");
+      }
+      expect(await readdir(root)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("creates independent atomic snapshots only for explicitly selected instructions", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "guidance-runtime-"));
     try {
-      const [a, b, pure, explicit] = await Promise.all([
-        prepareAgentGuidance(DEFAULT_AGENT_GUIDANCE, { runtimeRoot: root }),
-        prepareAgentGuidance(DEFAULT_AGENT_GUIDANCE, { runtimeRoot: root }),
-        prepareAgentGuidance(PURE_AGENT_GUIDANCE, { runtimeRoot: root }),
+      const styleSelection = { style: "attention-kind", skills: [] };
+      const prepared = await Promise.all([
+        prepareAgentGuidance(styleSelection, { runtimeRoot: root }),
+        prepareAgentGuidance(styleSelection, { runtimeRoot: root }),
         prepareAgentGuidance({ ...DEFAULT_AGENT_GUIDANCE, skills: ["karpathy-guidelines"] }, { runtimeRoot: root }),
       ]);
+      const [a, b, explicit] = prepared;
+      if (!a || !b || !explicit) throw new Error("Explicit guidance must produce a snapshot");
       expect(a.agentsPath).toBe(b.agentsPath);
-      expect(a.agentsPath).not.toBe(pure.agentsPath);
+      expect(a.agentsPath).not.toBe(explicit.agentsPath);
       const instructions = await readFile(a.agentsPath, "utf8");
       for (const match of instructions.matchAll(/\]\(\.\/raw\/([^)]*)\)/g))
         await expect(
@@ -69,11 +82,8 @@ describe("vendored agent guidance", () => {
         "Before writing, reviewing, debugging, or refactoring code",
       );
       expect(await readFile(path.join(path.dirname(explicit.agentsPath), "raw", "karpathy-guidelines.md"), "utf8")).toBeTruthy();
-      const pureText = await readFile(pure.agentsPath, "utf8");
-      expect(pureText).not.toContain("./raw/");
-      expect(pure.claudePluginPath).toBeNull();
-      expect(pureText).toContain("native user or project directories remain available");
-      expect(await readdir(root)).toHaveLength(3);
+      expect(explicit.claudePluginPath).toBeNull();
+      expect(await readdir(root)).toHaveLength(2);
       const style = await readFile(
         path.join(a.claudePluginPath!, "output-styles/attention-kind.md"),
         "utf8",

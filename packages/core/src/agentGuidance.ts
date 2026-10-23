@@ -67,9 +67,7 @@ export const agentGuidanceSchema = z
   .strict();
 export type AgentGuidance = z.infer<typeof agentGuidanceSchema>;
 export const DEFAULT_AGENT_GUIDANCE: AgentGuidance = {
-  style: "attention-kind",
-  skills: AGENT_SKILLS.filter((entry) => entry.defaultEnabled).map(
-    (entry) => entry.id,
-  ),
+  style: null,
+  skills: [],
 };
 export const PURE_AGENT_GUIDANCE: AgentGuidance = { style: null, skills: [] };

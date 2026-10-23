@@ -57,9 +57,9 @@ describe("agent guidance preferences", () => {
     });
   });
 
-  it("defaults connector skills off without overwriting explicit persisted choices", async () => {
+  it("defaults connector styles and skills off without overwriting explicit persisted choices", async () => {
     const { file, store } = await storeAt();
-    expect(DEFAULT_AGENT_GUIDANCE).toEqual({ style: "attention-kind", skills: [] });
+    expect(DEFAULT_AGENT_GUIDANCE).toEqual({ style: null, skills: [] });
     const skills = ["karpathy-guidelines", "verification-before-completion"];
     await writeFile(file, JSON.stringify({ version: 1, channels: {
       explicit: { skills }, styleOnly: { style: "spartan" },
@@ -67,6 +67,8 @@ describe("agent guidance preferences", () => {
     expect((await store.get({ channelId: "explicit" })).skills).toEqual(skills);
     expect((await store.get({ channelId: "child", parentId: "explicit" })).skills).toEqual(skills);
     expect((await store.get({ channelId: "styleOnly" })).skills).toEqual([]);
+    expect((await store.get({ channelId: "styleOnly" })).style).toBe("spartan");
+    expect((await store.get({ channelId: "new" })).style).toBeNull();
     await store.reset({ channelId: "explicit" });
     expect((await store.get({ channelId: "explicit" })).skills).toEqual([]);
     await store.setSkill({ channelId: "styleOnly" }, "karpathy-guidelines", true);

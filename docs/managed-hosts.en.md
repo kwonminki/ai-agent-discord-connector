@@ -102,7 +102,7 @@ Preserve the actual worker's OS user, `HOME`, any custom `CODEX_HOME` or `CLAUDE
 
 For Codex, check `codex login status`; if needed, use `codex login --device-auth` and let the user complete browser approval. For Claude Code, use the installed version's `claude auth status` / `claude auth login`, or launch `claude` for its interactive login. The browser approval and any returned code belong in the user's private terminal, not a shared channel. Do not copy another machine's OAuth state.
 
-New or inherited connector guidance has no enabled connector skills. `attention-kind` remains the default output style. Explicit `/set_skill` choices remain saved; disable those individually or use `/skills_reset` at the appropriate scope. A thread may still inherit an explicit parent setting. `/pure` also disables the connector's style, but does not disable native CLI skills.
+Connector output styles and skills are all disabled by default. An empty selection adds no guidance snapshot, prompt prefix, or Claude output-style plugin. Explicit `/set_style` and `/set_skill` choices remain saved; use `/pure` to turn them all off at a channel, or `/skills_reset` to restore inheritance. A thread may still inherit an explicit parent setting. Native CLI skill discovery remains available. Previous messages remain in an existing conversation; use a fresh session to verify the new defaults without that history.
 
 Official references: [Codex skills](https://learn.chatgpt.com/docs/build-skills), [Codex authentication](https://learn.chatgpt.com/docs/auth), [Claude Code skills](https://code.claude.com/docs/en/skills), [Claude Code authentication](https://code.claude.com/docs/en/authentication).
 

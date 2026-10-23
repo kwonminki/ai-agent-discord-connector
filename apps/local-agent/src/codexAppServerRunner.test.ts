@@ -1392,7 +1392,7 @@ describe("runCodexAppServerPrompt", () => {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
-  it("sends the current linked AGENTS profile on fresh and resumed Codex turns, including pure", async () => {
+  it("injects only explicit guidance while default and pure Codex turns retain the original prompt", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codex-guidance-"));
     const httpServer = createServer();
     const server = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
@@ -1414,11 +1414,10 @@ describe("runCodexAppServerPrompt", () => {
         const result = await runCodexAppServerPrompt({ workspaceRoot:root,cwd:root,prompt:"write code",timeoutMs:5000,appServerUrl,guidance,sessionId:prompts.length ? "guidance-thread" : null });
         expect(result.status).toBe("completed");
       }
-      const files = prompts.map((prompt) => prompt.match(/\[AGENTS\.md\]\(<(.+)>\)/)![1]);
-      expect(new Set(files).size).toBe(3);
-      expect(await readFile(files[0],"utf8")).toContain("attention-kind");
-      expect(await readFile(files[1],"utf8")).toContain("tldr");
-      expect(await readFile(files[2],"utf8")).not.toContain("./raw/");
+      expect(prompts[0]).toBe("write code");
+      expect(prompts[2]).toBe("write code");
+      const explicitFile = prompts[1].match(/\[AGENTS\.md\]\(<(.+)>\)/)![1];
+      expect(await readFile(explicitFile,"utf8")).toContain("tldr");
       expect(prompts.every((prompt) => prompt.endsWith("write code"))).toBe(true);
     } finally {
       for (const client of server.clients) client.terminate();

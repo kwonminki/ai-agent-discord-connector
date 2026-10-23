@@ -1523,25 +1523,27 @@ async function runClaudePromptOnce(input: RunClaudePromptInput): Promise<RunClau
 export async function runClaudePrompt(input: RunClaudePromptInput): Promise<RunClaudePromptResult> {
   if (input.guidance) {
     const prepared = await prepareAgentGuidance(input.guidance);
-    const settings = resolveClaudeSettings(input);
-    let mergedSettings = settings;
-    if (prepared.claudeStyleName) {
-      const existing = settings
-        ? JSON.parse(settings.trim().startsWith("{")
-          ? settings
-          : await readFile(path.resolve(input.cwd, settings), "utf8"))
-        : {};
-      if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
-        throw new Error("Claude settings must be an object");
+    if (prepared) {
+      const settings = resolveClaudeSettings(input);
+      let mergedSettings = settings;
+      if (prepared.claudeStyleName) {
+        const existing = settings
+          ? JSON.parse(settings.trim().startsWith("{")
+            ? settings
+            : await readFile(path.resolve(input.cwd, settings), "utf8"))
+          : {};
+        if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+          throw new Error("Claude settings must be an object");
+        }
+        mergedSettings = JSON.stringify({ ...existing, outputStyle: prepared.claudeStyleName });
       }
-      mergedSettings = JSON.stringify({ ...existing, outputStyle: prepared.claudeStyleName });
+      input = {
+        ...input,
+        preparedGuidance: prepared,
+        settings: mergedSettings,
+        prompt: guidancePrompt(prepared, input.prompt),
+      };
     }
-    input = {
-      ...input,
-      preparedGuidance: prepared,
-      settings: mergedSettings,
-      prompt: guidancePrompt(prepared, input.prompt),
-    };
   }
 
   if (persistentSessionsEnabled(input)) {

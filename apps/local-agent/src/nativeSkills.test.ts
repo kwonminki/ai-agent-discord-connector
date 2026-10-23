@@ -48,10 +48,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
-function report(cwd) {
+function report(cwd, prompt) {
   return JSON.stringify({
     pid: process.pid, home: process.env.HOME, codexHome: process.env.CODEX_HOME,
-    claudeConfig: process.env.CLAUDE_CONFIG_DIR, cwd, args,
+    claudeConfig: process.env.CLAUDE_CONFIG_DIR, cwd, args, prompt,
     userSkill: read(path.join(process.env.HOME, '.agents/skills/native-user/SKILL.md')),
     codexSkill: read(path.join(process.env.CODEX_HOME || path.join(process.env.HOME, '.codex'), 'skills/native-config/SKILL.md')),
     claudeSkill: read(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, '.claude'), 'skills/native-config/SKILL.md')),
@@ -71,7 +71,7 @@ if (args[0] === 'app-server') {
     }
     if (message.method === 'turn/start') {
       socket.send(JSON.stringify({ id: message.id, result: { turn: { id: 'native-turn' } } }));
-      socket.send(JSON.stringify({ method: 'item/completed', params: { threadId: 'native-thread', turnId: 'native-turn', item: { id: 'native-report', type: 'agentMessage', text: report(message.params.cwd) } } }));
+      socket.send(JSON.stringify({ method: 'item/completed', params: { threadId: 'native-thread', turnId: 'native-turn', item: { id: 'native-report', type: 'agentMessage', text: report(message.params.cwd, message.params.input[0].text) } } }));
       socket.send(JSON.stringify({ method: 'turn/completed', params: { threadId: 'native-thread', turn: { id: 'native-turn', status: 'completed' } } }));
     }
   }));
@@ -79,12 +79,12 @@ if (args[0] === 'app-server') {
   if (listen.startsWith('unix://')) server.listen(listen.slice(7));
   else { const url = new URL(listen); server.listen(Number(url.port), url.hostname); }
 } else if (args[0] === 'exec') {
-  fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], report(process.cwd()));
+  fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], report(process.cwd(), args.at(-1)));
   console.log(JSON.stringify({ type: 'thread.started', thread_id: 'native-thread' }));
 } else {
   console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'native-session' }));
   const input = require('node:readline').createInterface({ input: process.stdin });
-  input.on('line', () => console.log(JSON.stringify({ type: 'result', subtype: 'success', session_id: 'native-session', is_error: false, result: report(process.cwd()) })));
+  input.on('line', (line) => console.log(JSON.stringify({ type: 'result', subtype: 'success', session_id: 'native-session', is_error: false, result: report(process.cwd(), JSON.parse(line).message.content[0].text) })));
   input.on('close', () => process.exit(0));
 }
 `);
@@ -108,20 +108,23 @@ describe("native installed skill access through connector runners", () => {
     const input = { workspaceRoot: f.repo, cwd: f.cwd, prompt: "use an applicable native skill", timeoutMs: 5000, codexCommand: f.command, guidance: DEFAULT_AGENT_GUIDANCE };
     const defaults = completed(await runCodexPrompt(input));
     expect(defaults).toMatchObject({ home: f.home, cwd: f.cwd, userSkill: "native-user", codexSkill: "default-codex", projectCodex: "project-codex" });
+    expect(defaults.prompt).toBe(input.prompt);
     vi.stubEnv("CODEX_HOME", f.codexHome);
     expect(completed(await runCodexPrompt(input)).codexSkill).toBe("custom-codex");
     const explicit = completed(await runCodexPrompt({ ...input, codexHome: path.join(f.home, ".codex"), guidance: PURE_AGENT_GUIDANCE }));
     expect(explicit).toMatchObject({ codexHome: path.join(f.home, ".codex"), codexSkill: "default-codex", userSkill: "native-user", projectCodex: "project-codex" });
     expect(explicit.args.join(" ")).not.toMatch(/skills\s*=\s*false/);
+    expect(explicit.prompt).toBe(input.prompt);
   });
 
   it("keeps managed Codex app-server native homes separate while preserving project cwd", async () => {
     const f = await fixture();
-    const input = { workspaceRoot: f.repo, cwd: f.cwd, prompt: "native skills", timeoutMs: 5000, codexCommand: f.command };
+    const input = { workspaceRoot: f.repo, cwd: f.cwd, prompt: "native skills", timeoutMs: 5000, codexCommand: f.command, guidance: DEFAULT_AGENT_GUIDANCE };
     const first = completed(await runCodexAppServerPrompt(input));
     const reused = completed(await runCodexAppServerPrompt(input));
     expect(reused.pid).toBe(first.pid);
     expect(first).toMatchObject({ home: f.home, cwd: f.cwd, userSkill: "native-user", codexSkill: "default-codex", projectCodex: "project-codex" });
+    expect(first.prompt).toBe(input.prompt);
     vi.stubEnv("CODEX_HOME", f.codexHome);
     const custom = completed(await runCodexAppServerPrompt(input));
     expect(custom.pid).not.toBe(first.pid);
@@ -136,12 +139,14 @@ describe("native installed skill access through connector runners", () => {
 
   it.each([false, true])("preserves Claude native skills and settings when persistentSession=%s", async (persistentSession) => {
     const f = await fixture();
-    const input = { workspaceRoot: f.repo, cwd: f.cwd, prompt: "native skills", timeoutMs: 5000, claudeCommand: f.command, persistentSession, controlKey: "native-claude", guidance: DEFAULT_AGENT_GUIDANCE, settings: '{"env":{"NATIVE_TEST":"yes"}}' };
+    const input = { workspaceRoot: f.repo, cwd: f.cwd, prompt: "native skills", timeoutMs: 5000, claudeCommand: f.command, persistentSession, controlKey: "native-claude", guidance: DEFAULT_AGENT_GUIDANCE, settings: '{"env":{"NATIVE_TEST":"yes"},"outputStyle":"native-team-style"}' };
     const first = completed(await runClaudePrompt(input));
     expect(first).toMatchObject({ home: f.home, cwd: f.cwd, claudeSkill: "default-claude", projectClaude: "project-claude" });
     expect(first.args).not.toContain("--disable-slash-commands");
     expect(first.args).not.toContain("--setting-sources");
-    expect(JSON.parse(first.args[first.args.indexOf("--settings") + 1])).toMatchObject({ env: { NATIVE_TEST: "yes" }, outputStyle: "cdc-guidance:attention-kind" });
+    expect(first.args).not.toContain("--plugin-dir");
+    expect(first.prompt).toBe(input.prompt);
+    expect(first.args[first.args.indexOf("--settings") + 1]).toBe(input.settings);
     vi.stubEnv("CLAUDE_CONFIG_DIR", f.claudeConfig);
     const custom = completed(await runClaudePrompt(input));
     expect(custom).toMatchObject({ claudeConfig: f.claudeConfig, claudeSkill: "custom-claude", projectClaude: "project-claude" });
@@ -154,5 +159,10 @@ describe("native installed skill access through connector runners", () => {
     expect(pure).toMatchObject({ claudeSkill: "custom-claude", projectClaude: "project-claude" });
     expect(pure.args).not.toContain("--plugin-dir");
     expect(pure.args).not.toContain("--disable-slash-commands");
+    expect(pure.prompt).toBe(input.prompt);
+    const styled = completed(await runClaudePrompt({ ...input, guidance: { style: "attention-kind", skills: [] } }));
+    expect(styled.args).toContain("--plugin-dir");
+    expect(styled.prompt).toContain("Connector guidance selection");
+    expect(JSON.parse(styled.args[styled.args.indexOf("--settings") + 1])).toEqual({ env: { NATIVE_TEST: "yes" }, outputStyle: "cdc-guidance:attention-kind" });
   }, 20_000);
 });

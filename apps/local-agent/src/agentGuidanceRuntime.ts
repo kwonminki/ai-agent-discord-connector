@@ -22,8 +22,10 @@ export interface PreparedAgentGuidance {
 export async function prepareAgentGuidance(
   guidance: AgentGuidance,
   options: { assetsRoot?: string; runtimeRoot?: string } = {},
-): Promise<PreparedAgentGuidance> {
+): Promise<PreparedAgentGuidance | null> {
   const selected = agentGuidanceSchema.parse(guidance);
+  // No optional selection means no generated files, plugin, or prompt wrapper.
+  if (selected.style === null && selected.skills.length === 0) return null;
   const assets = options.assetsRoot ?? bundledAssets;
   const style = AGENT_STYLES.find((entry) => entry.id === selected.style);
   const skills = AGENT_SKILLS.filter((entry) =>
@@ -122,9 +124,9 @@ export async function prepareAgentGuidance(
 }
 
 export function guidancePrompt(
-  prepared: PreparedAgentGuidance,
+  prepared: PreparedAgentGuidance | null,
   prompt: string,
 ): string {
-  if (/^\/compact(?:\s|$)/i.test(prompt.trim())) return prompt;
+  if (!prepared || /^\/compact(?:\s|$)/i.test(prompt.trim())) return prompt;
   return `Connector guidance selection for this request: read [AGENTS.md](<${prepared.agentsPath}>) and its applicable linked files before doing the task. This selection supersedes earlier connector selections; preserve project instructions and native installed skills.\n\n${prompt}`;
 }
