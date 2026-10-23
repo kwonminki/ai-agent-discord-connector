@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { watchDiscordGateway } from "./discordGatewayWatchdog.js";
+import type { CreateDiscordMessageHandlerInput } from "./messageHandler.js";
 
 vi.mock("./discordGatewayWatchdog.js", () => ({ watchDiscordGateway: vi.fn(() => vi.fn()) }));
 
@@ -19,8 +20,10 @@ afterEach(() => {
   delete process.env.DISCORD_TOKEN;
   delete process.env.CONNECT_MODE;
   delete process.env.CONNECT_CONFIG_PATH;
+  delete process.env.CONNECT_REGISTER_COMMANDS_ON_START;
   vi.resetModules();
   vi.unmock("./discordClient.js");
+  vi.doUnmock("./messageHandler.js");
 });
 
 describe("bot entrypoint", () => {
@@ -165,6 +168,48 @@ describe("bot entrypoint", () => {
     expect(login).toHaveBeenCalledWith("discord-token");
     expect(watchDiscordGateway).toHaveBeenCalledWith({ login, once, on }, expect.any(Function));
   }, 15_000);
+
+  it.each([undefined, "0"])("controls startup registration with flag %s while keeping explicit reload available", async (registrationFlag) => {
+    process.env.DISCORD_TOKEN = "discord-token";
+    if (registrationFlag === undefined) delete process.env.CONNECT_REGISTER_COMMANDS_ON_START;
+    else process.env.CONNECT_REGISTER_COMMANDS_ON_START = registrationFlag;
+    const login = vi.fn().mockResolvedValue("logged-in");
+    const once = vi.fn();
+    const on = vi.fn();
+    const client = { login, once, on };
+    const register = vi.fn().mockResolvedValue(undefined);
+    const attachMessages = vi.fn();
+    const attachInteractions = vi.fn();
+    let hooks: CreateDiscordMessageHandlerInput | undefined;
+    vi.doMock("./messageHandler.js", () => ({
+      createDiscordMessageHandler: (input: CreateDiscordMessageHandlerInput) => {
+        hooks = input;
+        return Object.assign(async () => {}, { drainRestoredMessages() {} });
+      },
+    }));
+    vi.doMock("./discordClient.js", () => ({
+      createDiscordClient: () => client,
+      createDiscordGuildSurface: vi.fn(() => null),
+      attachDiscordMessageHandler: attachMessages,
+      attachDiscordInteractionHandler: attachInteractions,
+      registerDiscordApplicationCommands: register,
+    }));
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const { startBot } = await import("./index.js");
+      await startBot();
+      const ready = once.mock.calls.find(([event]) => event === "clientReady")?.[1] as () => void;
+      ready();
+      expect(login).toHaveBeenCalledWith("discord-token");
+      expect(attachMessages).toHaveBeenCalledOnce();
+      expect(attachInteractions).toHaveBeenCalledOnce();
+      expect(register).toHaveBeenCalledTimes(registrationFlag === "0" ? 0 : 1);
+      if (registrationFlag === "0") expect(info).toHaveBeenCalledWith(expect.stringContaining("Startup slash-command registration disabled"));
+
+      await hooks!.reloadBot!({ mode: "commands", execution: { activeCount: 0, pendingCount: 0 }, force: false });
+      expect(register).toHaveBeenCalledTimes(registrationFlag === "0" ? 1 : 2);
+    } finally { info.mockRestore(); }
+  });
 
   it("starts the bot from a generated direct mode config", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "direct-config-"));

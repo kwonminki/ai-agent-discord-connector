@@ -14,6 +14,8 @@ Private Discord guild
 
 Each host runs its own gateway and worker. Hosts may share the user's bot token, guild and Operator roles. Each host must have different parent channels and its own computer ID, queues, session state and installation manifest. There is no central hosted control service in this Direct-mode workflow.
 
+Slash commands belong to the shared Discord application/guild, not to an individual host. When hosts share one bot, designate one existing host to publish the command definitions. On additional hosts, set `CONNECT_REGISTER_COMMANDS_ON_START=0` in the gateway service environment before starting it. The default remains enabled; disabling it skips only automatic startup registration and leaves message handling and existing commands available. Explicit `/reload commands` and `/reload restart` still publish this checkout's definitions, so run those actions only on the designated publisher; restart a follower through its service manager instead. Keep follower code compatible with the published command definitions, especially when the existing host has custom commands.
+
 ## 1. Inspect the source and target
 
 Use the provided SSH connection, including its jump host or configured SSH alias. Preserve host-key verification. Inspect the target OS, execution user, workspace, Node/pnpm, agent CLI paths and existing connector services. For an existing installation, inspect active jobs and local changes before deciding whether it needs repair or an update.

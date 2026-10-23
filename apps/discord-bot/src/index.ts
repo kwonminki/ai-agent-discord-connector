@@ -931,9 +931,13 @@ export async function startBot(): Promise<void> {
 
   client.once("clientReady", () => {
     console.info(`Discord bot ready as ${client.user?.tag ?? "unknown"}`);
-    void registerDiscordApplicationCommands(client, connectConfig?.discord.guildId, locale).catch((error) => {
-      console.error("discord-bot failed to register slash commands", error);
-    });
+    if (featureEnabled(process.env.CONNECT_REGISTER_COMMANDS_ON_START)) {
+      void registerDiscordApplicationCommands(client, connectConfig?.discord.guildId, locale).catch((error) => {
+        console.error("discord-bot failed to register slash commands", error);
+      });
+    } else {
+      console.info("Startup slash-command registration disabled by CONNECT_REGISTER_COMMANDS_ON_START; using the existing application commands.");
+    }
 
     if (durableRequestStore) {
       const guild = resolveReadyGuildSurface(client, connectConfig?.discord.guildId, answerCopyStore, locale);
