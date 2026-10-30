@@ -187,6 +187,78 @@ describe("direct worker", () => {
     }
   });
 
+  it("compacts a transient progress backlog without dropping public agent messages", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-progress-backlog-"));
+    const store = createDirectWorkerStore(path.join(root, "worker"));
+
+    try {
+      await store.enqueue({
+        jobId: "progress-backlog-job",
+        type: "run-command",
+        queueKey: "thread-1",
+        payload: {
+          workspaceRoot: root,
+          cwd: root,
+          command: "printf backlog",
+          timeoutMs: 5_000,
+          confirmedDangerous: true,
+        },
+      });
+      for (let index = 0; index < 30; index += 1) {
+        await store.appendProgress("progress-backlog-job", {
+          type: "operation-progress",
+          label: `tool-${index}`,
+          eventType: "item/completed",
+        });
+      }
+      await store.appendProgress("progress-backlog-job", { type: "agent-message", text: "first public update" });
+      for (let index = 30; index < 60; index += 1) {
+        await store.appendProgress("progress-backlog-job", {
+          type: "operation-progress",
+          label: `tool-${index}`,
+          eventType: "item/completed",
+        });
+      }
+      await store.appendProgress("progress-backlog-job", { type: "agent-message", text: "second public update" });
+      for (let index = 60; index < 90; index += 1) {
+        await store.appendProgress("progress-backlog-job", {
+          type: "operation-progress",
+          label: `tool-${index}`,
+          eventType: "item/completed",
+        });
+      }
+      await store.complete("progress-backlog-job", { status: "completed" });
+      const delivered: Array<{ type: string; text?: string; label?: string }> = [];
+
+      await createDirectWorkerClient({ store, pollIntervalMs: 10 }).submit({
+        jobId: "progress-backlog-job",
+        type: "run-command",
+        queueKey: "thread-1",
+        payload: {
+          workspaceRoot: root,
+          cwd: root,
+          command: "printf backlog",
+          timeoutMs: 5_000,
+          confirmedDangerous: true,
+        },
+        onProgress: (event) => {
+          delivered.push(event);
+        },
+      });
+
+      expect(delivered.filter((event) => event.type === "agent-message")).toEqual([
+        { type: "agent-message", text: "first public update" },
+        { type: "agent-message", text: "second public update" },
+      ]);
+      expect(delivered.filter((event) => event.type === "operation-progress")).toEqual([
+        { type: "operation-progress", label: "tool-89", eventType: "item/completed" },
+      ]);
+      await expect(store.readDeliveryCursor("progress-backlog-job")).resolves.toBe(92);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("persists request_user_input events and delivers the Discord answer to the worker", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "direct-worker-user-input-"));
     const store = createDirectWorkerStore(path.join(root, "worker"));
