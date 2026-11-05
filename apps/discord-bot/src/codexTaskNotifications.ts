@@ -416,7 +416,11 @@ export async function notifyCodexTaskCompletions(
     const archivedSessionIds = new Set(state.archivedCodexSessionIds.map(normalizedSessionId));
     for (const session of input.sessions) {
       const sessionKey = normalizedSessionId(session.id);
-      if (!activeOrcaSessionIds.has(sessionKey) || ignoredSessionIds.has(sessionKey) ||
+      // Native Orca chats have no CLI terminal handle. Their persisted turn status
+      // is enough for mirroring, but does not establish an input-routing owner.
+      const runningOrcaChat = session.originator === "orca_desktop" &&
+        session.realtimeEvents?.filter(event => event.turnStatus).at(-1)?.turnStatus === "running";
+      if ((!activeOrcaSessionIds.has(sessionKey) && !runningOrcaChat) || ignoredSessionIds.has(sessionKey) ||
           archivedSessionIds.has(sessionKey) || session.subagent ||
           state.sessionChannels.some(channel => normalizedSessionId(channel.codexSessionId ?? "") === sessionKey) ||
           hasPendingCodexForkReservation(state, session)) continue;

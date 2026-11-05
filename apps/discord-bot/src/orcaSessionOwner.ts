@@ -6,6 +6,8 @@ export interface OrcaSessionOwner {
   sessionId: string;
   terminalHandle: string;
   processKey: string;
+  paneKey?: string;
+  worktreeId?: string;
 }
 const handlePattern = /^term_[A-Za-z0-9_-]{1,100}$/;
 const sessionPattern = /^[0-9a-f-]{36}$/i;
@@ -22,6 +24,14 @@ export function primaryCodexSession(line: string): string | null {
 export function terminalHandleFromEnvironment(environment: string, separator = "\0"): string | null {
   const value = environment.split(separator).find((part) => part.startsWith("ORCA_TERMINAL_HANDLE="))?.slice("ORCA_TERMINAL_HANDLE=".length);
   return value && handlePattern.test(value) ? value : null;
+}
+
+export function paneIdentityFromEnvironment(environment: string, separator = "\0"): { paneKey?: string; worktreeId?: string } {
+  const entries = environment.split(separator);
+  const paneKey = entries.find(value => value.startsWith("ORCA_PANE_KEY="))?.slice("ORCA_PANE_KEY=".length);
+  const worktreeId = entries.find(value => value.startsWith("ORCA_WORKTREE_ID="))?.slice("ORCA_WORKTREE_ID=".length);
+  return paneKey && /^[a-f0-9-]{36}:[a-f0-9-]{36}$/i.test(paneKey) && worktreeId && worktreeId.length <= 4096
+    ? { paneKey, worktreeId } : {};
 }
 
 async function sessionFromFile(file: string): Promise<string | null> {
@@ -52,7 +62,8 @@ async function linuxOwners(procRoot: string): Promise<OrcaSessionOwner[]> {
       if (args.includes("app-server") || args.includes("exec")) continue;
       const start = processStart(await readFile(`${root}/stat`, "utf8"));
       if (!start) continue;
-      const terminalHandle = terminalHandleFromEnvironment(await readFile(`${root}/environ`, "utf8"));
+      const environment = await readFile(`${root}/environ`, "utf8");
+      const terminalHandle = terminalHandleFromEnvironment(environment);
       if (!terminalHandle) continue;
       const sessions = new Set<string>();
       for (const fd of await readdir(`${root}/fd`)) {
@@ -62,7 +73,7 @@ async function linuxOwners(procRoot: string): Promise<OrcaSessionOwner[]> {
         } catch { /* The CLI may close a descriptor while being inspected. */ }
       }
       if (sessions.size !== 1 || processStart(await readFile(`${root}/stat`, "utf8")) !== start) continue;
-      owners.push({ terminalHandle, sessionId: [...sessions][0], processKey: `${pid}:${start}` });
+      owners.push({ terminalHandle, sessionId: [...sessions][0], processKey: `${pid}:${start}`, ...paneIdentityFromEnvironment(environment) });
     } catch (error) {
       if (!["ENOENT", "EACCES", "EPERM", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     }
@@ -103,7 +114,7 @@ async function macOwners(): Promise<OrcaSessionOwner[]> {
       if (!terminalHandle) continue;
       const sessions = new Set((await Promise.all(files.map(sessionFromFile))).filter((value): value is string => !!value));
       if (sessions.size !== 1 || (await run("/bin/ps", ["-p", pid, "-o", "lstart="], options)).stdout.trim() !== start) continue;
-      owners.push({ terminalHandle, sessionId: [...sessions][0], processKey: `${pid}:${start}` });
+      owners.push({ terminalHandle, sessionId: [...sessions][0], processKey: `${pid}:${start}`, ...paneIdentityFromEnvironment(withEnvironment.slice(args.length).trim(), " ") });
     } catch { /* A process may exit during discovery; do not reuse its PID. */ }
   }
   return owners;

@@ -34,6 +34,44 @@ async function createCodexGoalsDatabase(codexHome: string, sql: string) {
 }
 
 describe("codex parser", () => {
+  it.each([false, true])("discovers Orca chat sessions without index entries (index exists: %s)", async (indexExists) => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-orca-chat-"));
+    const id = "019db2be-b2b3-7e82-9e61-8c84b28ad290";
+    try {
+      if (indexExists) await writeSessionIndex(home, []);
+      const dir = path.join(home, "sessions", "2026", "04", "22");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `rollout-2026-04-22T00-00-00-${id}.jsonl`), [
+        { type: "session_meta", payload: { id, cwd: "/repo", source: "vscode", originator: "orca_desktop" } },
+        { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "테스트" }] } },
+        { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Reply" }] } },
+        { type: "event_msg", payload: { type: "task_complete", last_agent_message: "Reply" } },
+      ].map(row => JSON.stringify(row)).join("\n") + "\n");
+      await createCodexStateDatabase(home, `
+        create table threads (id text primary key, archived integer, source text, originator text, title text, updated_at integer);
+        create table thread_spawn_edges (parent_thread_id text, child_thread_id text);
+        insert into threads values ('${id}', 0, 'vscode', 'orca_desktop', '테스트', 1776816000);
+        insert into threads values ('unrelated', 0, 'vscode', 'another_client', 'Other chat', 1776816000);
+        insert into threads values ('exec', 0, 'exec', 'orca_desktop', 'Background task', 1776816000);
+      `);
+      const options = { activeOnly: true, includeContextPreview: true, includeRealtimeEvents: true };
+      const sessions = await discoverCodexSessions(home, options);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]).toMatchObject({ id, threadName: "테스트", originator: "orca_desktop", cwdHint: "/repo" });
+      expect(sessions[0].realtimeEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "user", text: "테스트" }),
+        expect.objectContaining({ kind: "assistant", text: "Reply" }),
+        expect.objectContaining({ turnStatus: "completed" }),
+      ]));
+      // A later index entry must not duplicate the chat or replace the current database title.
+      await writeSessionIndex(home, [{ id, name: "Stale name", updatedAt: "2026-04-21T00:00:00Z" }]);
+      expect(await discoverCodexSessions(home, options)).toMatchObject([{ id, threadName: "테스트" }]);
+      await createCodexStateDatabase(home, `update threads set archived = 1 where id = '${id}';`);
+      expect(await discoverCodexSessions(home, options)).toEqual([]);
+      expect(await discoverCodexSessions(home, { includeArchived: true })).toMatchObject([{ id }]);
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
+  });
+
   it.each([false, true])("recognizes Guardian's top-level parent with string source: %s", (stringSource) => {
     const source = { subagent: { other: "guardian" } };
     const meta = { id: "guardian", cwd: "/repo", parent_thread_id: "root", source: stringSource ? JSON.stringify(source) : source };

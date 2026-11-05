@@ -29,6 +29,7 @@ export interface CodexSessionMeta {
 
 export interface DiscoveredCodexSession extends CodexSessionIndexEntry {
   cwdHint: string | null;
+  originator?: string;
   forkedFromId?: string;
   subagent?: CodexSubagent;
   goalStatus?: CodexSessionGoalStatus;
@@ -76,6 +77,7 @@ interface CodexThreadState {
   source: string | null;
   isSubAgent: boolean;
   subagent?: CodexSubagent;
+  orcaChat?: CodexSessionIndexEntry;
 }
 
 type SessionDetails = {
@@ -246,17 +248,18 @@ export async function discoverCodexSessions(
   const indexPath = path.join(codexHome, "session_index.jsonl");
   const indexEntries = await readSessionIndexEntries(indexPath);
 
-  if (!options.includeSubAgents && indexEntries === null && (!options.includeSessionIds || options.includeSessionIds.length === 0)) {
-    return [];
-  }
-
   const sessionsRoot = path.join(codexHome, "sessions");
   const [archivedSessionIds, threadStates, goalStatuses] = await Promise.all([
     buildArchivedSessionIds(path.join(codexHome, "archived_sessions")),
     readCodexThreadStates(codexHome),
     readCodexGoalStatuses(codexHome),
   ]);
-  const entries = indexEntries ?? [];
+  // Orca's native chat client persists threads without writing session_index.jsonl.
+  const entriesById = new Map((indexEntries ?? []).map(entry => [entry.id, entry]));
+  for (const state of threadStates.values()) {
+    if (state.orcaChat) entriesById.set(state.orcaChat.id, state.orcaChat);
+  }
+  const entries = [...entriesById.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const visibleEntries = entries.filter((entry) =>
     shouldIncludeSession(entry.id, {
@@ -306,6 +309,7 @@ export async function discoverCodexSessions(
       return {
         ...entry,
         cwdHint: details.cwdHint,
+        ...(threadStates.get(entry.id)?.orcaChat ? { originator: "orca_desktop" } : {}),
         ...(details.subagent ?? threadStates.get(entry.id)?.subagent ? { subagent: details.subagent ?? threadStates.get(entry.id)?.subagent } : {}),
         ...(details.forkedFromId ? { forkedFromId: details.forkedFromId } : {}),
         ...(goalStatuses.get(entry.id) ? { goalStatus: goalStatuses.get(entry.id) } : {}),
@@ -792,12 +796,28 @@ async function readCodexThreadStates(codexHome: string): Promise<Map<string, Cod
   }
 
   try {
-    const stdout = await readSqliteRows(databasePath, [
-      `select 'thread' || char(31) || id || char(31) || archived || char(31) || source from threads;`,
-      `select 'edge' || char(31) || child_thread_id || char(31) || parent_thread_id from thread_spawn_edges;`,
+    const [stdout, orcaRows] = await Promise.all([
+      readSqliteRows(databasePath, [
+        `select 'thread' || char(31) || id || char(31) || archived || char(31) || source from threads;`,
+        `select 'edge' || char(31) || child_thread_id || char(31) || parent_thread_id from thread_spawn_edges;`,
+      ]),
+      // Older Codex databases lack originator. Keep their existing discovery intact.
+      readSqliteRows(databasePath, [
+        `select json_object('id', id, 'title', title, 'updatedAt', updated_at) from threads where source = 'vscode' and originator = 'orca_desktop';`,
+      ]).catch(() => ""),
     ]);
 
     const states = parseCodexThreadStateRows(stdout);
+    for (const line of orcaRows.split("\n").filter(Boolean)) {
+      const row = JSON.parse(line) as { id: string; title: string; updatedAt: number };
+      const state = states.get(row.id);
+      if (!state || state.isSubAgent) continue;
+      state.orcaChat = {
+        id: row.id,
+        threadName: row.title?.trim() || `Codex session ${row.id.slice(0, 8)}`,
+        updatedAt: new Date(row.updatedAt * 1000).toISOString(),
+      };
+    }
 
     threadStatesCache.set(databasePath, {
       mtimeMs: stats.mtimeMs,

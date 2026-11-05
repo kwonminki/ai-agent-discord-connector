@@ -19,6 +19,14 @@ For Claude Code, channels without session sync, or terminals on a different mach
 
 Answer notifications use existing session transcript sync. Orca routing does not create a new chat or continuously mirror the screen. **Read screen** also works without transcript sync. Keyboard-only dialogs, authentication, and file uploads still require Orca. Avoid typing in the local composer while sending from Discord.
 
+## Native Codex chat mode
+
+The connector also discovers Orca's native Codex chats from the local Codex state database, even when Orca does not write `session_index.jsonl`. With realtime sync enabled, running chats get a Discord thread before completion; public messages and completion updates use the existing transcript sync. Discovery does not require a working Orca CLI. Archived chats and subagents retain their existing filtering and grouping.
+
+Ordinary replies in a linked Discord thread are matched against Orca's currently proven Codex session ID and delivered through that native chat's input API. No extra Codex process or fork is created. Messages sent during a turn enter Orca's queue; acceptance is distinct from completion. Answer approvals and structured questions, and attach files, in Orca.
+
+The connector checks runtime identity and session ownership for each request, including after Orca restarts. Set `CONNECT_ORCA_USER_DATA_PATH` for a nondefault Orca profile. For existing CLI terminals, expired handles can be recovered using the running process's attested pane ID. If Orca itself blocks input to a terminal from an older version, finish its running task and resume the same conversation in a current Orca chat. The connector does not terminate running tasks or replay ambiguous deliveries.
+
 ## Gateway configuration
 
 Orca must be reachable **from the gateway's service account/environment**, not just an interactive login shell. The gateway selects one executable, without fallback:

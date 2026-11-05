@@ -50,7 +50,7 @@ function session(input: {
 }
 
 describe("notifyCodexTaskCompletions", () => {
-  it("creates a live Orca reply thread before any completion and reuses it after restart and completion", async () => {
+  it.each(["cli", "chat"])("creates a live Orca %s thread before any completion and reuses it after restart and completion", async (mode) => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "orca-auto-thread-"));
     const statePath = path.join(tempRoot, "state.json");
     const stateStore = createDirectSyncStateStore(statePath);
@@ -60,7 +60,11 @@ describe("notifyCodexTaskCompletions", () => {
       guild: { createThread, sendTextMessage }, stateStore,
       controlApi: { createManagedChannel: vi.fn().mockResolvedValue({}), linkCodexSession: vi.fn().mockResolvedValue({}) },
       adminChannelId: "admin", computerId: "computer", defaultWorkspaceRoot: "/repo",
-      activeOrcaSessionIds: ["session-1"], sessions: [session({})],
+      activeOrcaSessionIds: mode === "cli" ? ["session-1"] : [],
+      sessions: [mode === "cli" ? session({}) : {
+        ...session({ realtimeEvents: [{ key: "start", kind: "status", text: "작업 시작", turnStatus: "running" }] }),
+        originator: "orca_desktop",
+      }],
     };
     try {
       await expect(notifyCodexTaskCompletions(input)).resolves.toMatchObject({ completedSessions: 0, notifiedSessions: 0 });

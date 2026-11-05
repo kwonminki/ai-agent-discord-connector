@@ -10,6 +10,22 @@ function runner(response: unknown) {
 }
 
 describe("Orca CLI adapter", () => {
+  it("recovers a restarted handle by the process-attested pane, without guessing by name", async () => {
+    const owner = { sessionId: "session", terminalHandle: "term_old", processKey: "123:456", paneKey: "tab:leaf", worktreeId: "folder:work" };
+    const run = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === "skills") return { stdout: JSON.stringify({ markdown: "guide" }) };
+      if (args.includes("term_old")) throw Object.assign(new Error("private"), { stdout: JSON.stringify({ error: { code: "terminal_handle_stale" } }) });
+      if (args[1] === "list") return envelope({ terminals: [{ handle: "old-unsupported" }, { ...target, tabId: "tab", leafId: "leaf", worktreeId: "folder:work" }] });
+      return envelope({ terminal: target });
+    });
+    expect(await createOrcaClient("orca", run, async () => owner).resolveSession!("codex", "session")).toEqual({ ...target, processKey: owner.processKey });
+    expect(run).toHaveBeenCalledWith("orca", ["terminal", "list", "--worktree", "id:folder:work", "--limit", "100", "--json"], expect.anything());
+  });
+  it("explains the legacy Orca refusal without leaking CLI output or retrying another binary", async () => {
+    const run = vi.fn().mockRejectedValue({ stderr: "This terminal was started by an older version of Orca. private details" });
+    await expect(createOrcaClient("legacy-orca", run).list()).rejects.toThrow("No input was sent");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
   it("shares a fresh, verified owner snapshot with channel discovery without extra scans", async () => {
     const owner = { sessionId: "session", terminalHandle: target.handle, processKey: "123:456" };
     const owners = vi.fn().mockResolvedValue([owner]);

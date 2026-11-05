@@ -70,6 +70,7 @@ import {
 import { createDiscordMessageHandler } from "./messageHandler.js";
 import { syncSubagentThreads, subagentThreadName } from "./subagentThreads.js";
 import { createOrcaClient } from "./orcaClient.js";
+import { withOrcaNativeChat } from "./orcaNativeChat.js";
 import { createOrcaBridge } from "./orcaBridge.js";
 import type { BotReloadExecutionState, DiscordOutgoingMessage } from "./messageHandler.js";
 import { createHarnessStore } from "./harnessStore.js";
@@ -367,7 +368,7 @@ export async function startBot(): Promise<void> {
               : process.env.CONTROL_API_URL ?? "http://127.0.0.1:4317",
         });
   const orcaClient = connectConfig?.mode === "direct" && featureEnabled(process.env.CONNECT_ORCA_ENABLED, connectConfig.direct.orca?.enabled ?? true)
-    ? createOrcaClient(process.env.CONNECT_ORCA_COMMAND?.trim() || connectConfig.direct.orca?.command?.trim() || undefined) : undefined;
+    ? withOrcaNativeChat(createOrcaClient(process.env.CONNECT_ORCA_COMMAND?.trim() || connectConfig.direct.orca?.command?.trim() || undefined)) : undefined;
   let orcaDiscoveryRetryAt = 0;
   const listDirectCodexSessions =
     connectConfig?.mode === "direct"

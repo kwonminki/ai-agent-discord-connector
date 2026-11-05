@@ -77,6 +77,8 @@ Use operating-system full-disk encryption for data at rest. Keep the repository 
 
 Agent Relay accepts bot-authored prompts only from explicitly configured Coordinator bot user IDs and only in agent session threads. Keep its control channel private, use a separate bot token, and do not broaden this exception to all bots or shell-admin channels. Relay state and result metadata may contain full agent answers.
 
+Orca native chat input uses the gateway user's local Orca profile and authenticated runtime socket. The connector matches the current Codex session handle and checks runtime identity and ownership before sending authorized human input. Protect Orca's runtime metadata and session journal as private local state; never publish their credentials or conversation records. Native input uses Orca's existing permissions and queue. Approvals, structured questions, and attachments still require Orca, and ambiguous deliveries are not automatically retried.
+
 ## Shell Execution
 
 Shell commands run with the local user's permissions. The connector includes role checks and dangerous-command confirmation, but it is not an operating-system sandbox.

@@ -53,6 +53,8 @@ const envelopeSchema = z.object({
   _meta: z.object({ runtimeId: z.string().min(1) }),
 });
 
+class StaleOrcaTerminal extends Error {}
+
 export function createOrcaClient(
   command = resolveOrcaCommand(),
   run: (command: string, args: string[], options: { timeout: number; maxBuffer: number; windowsHide: boolean }) => Promise<{ stdout: string }> = promisify(execFile),
@@ -70,8 +72,17 @@ export function createOrcaClient(
         timeout: 15_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true,
       });
       return JSON.parse(stdout) as unknown;
-    } catch {
+    } catch (error) {
       // execFile errors include the full command/prompt. Do not expose those in Discord/logs.
+      const diagnostic = `${(error as { stdout?: unknown }).stdout ?? ""}\n${(error as { stderr?: unknown }).stderr ?? ""}`;
+      try {
+        if (JSON.parse(String((error as { stdout?: unknown }).stdout)).error?.code === "terminal_handle_stale") {
+          throw new StaleOrcaTerminal("Orca terminal handle expired. Reopen the session in Orca.");
+        }
+      } catch (parsed) { if (parsed instanceof StaleOrcaTerminal) throw parsed; }
+      if (diagnostic.includes("This terminal was started by an older version of Orca")) {
+        throw new Error("Orca 업데이트 이전 터미널은 현재 Orca가 원격 입력을 차단합니다. 작업 종료 후 같은 대화를 새 Orca 채팅에서 이어 주세요. 입력은 전달되지 않았습니다. / Orca blocks remote input to this legacy terminal. Resume the same conversation in a current Orca chat after the running task finishes. No input was sent.");
+      }
       throw new Error("Orca CLI failed. Check CONNECT_ORCA_COMMAND and the running Orca runtime.");
     }
   }
@@ -142,9 +153,26 @@ export function createOrcaClient(
       if (agent !== "codex") return null;
       const owner = await findOwner(sessionId);
       if (!owner) return null;
-      const response = await call(["terminal", "show", "--terminal", owner.terminalHandle]);
+      let handle = owner.terminalHandle;
+      let response;
+      try { response = await call(["terminal", "show", "--terminal", handle]); }
+      catch (error) {
+        if (!(error instanceof StaleOrcaTerminal) || !owner.paneKey || !owner.worktreeId) throw error;
+        // Handles change after runtime restart; the process-attested pane is stable.
+        const [tabId, leafId] = owner.paneKey.split(":");
+        const listed = await call(["terminal", "list", "--worktree", `id:${owner.worktreeId}`, "--limit", "100"]);
+        const rows = z.object({ terminals: z.array(z.unknown()) }).parse(listed.result);
+        const matches = rows.terminals.flatMap(row => {
+          const parsed = terminalSchema.extend({ tabId: z.string(), leafId: z.string(), worktreeId: z.string() }).safeParse(row);
+          return parsed.success && parsed.data.tabId === tabId && parsed.data.leafId === leafId && parsed.data.worktreeId === owner.worktreeId ? [parsed.data] : [];
+        });
+        if (matches.length !== 1) throw new Error("현재 Orca에 이 터미널의 입력 연결이 없습니다. 작업 종료 후 같은 대화를 새 Orca 채팅에서 이어 주세요. 입력은 전달되지 않았습니다. / The exact Orca pane could not be recovered. Resume the same conversation in a current Orca chat after its task finishes. No input was sent.");
+        handle = matches[0].handle;
+        response = await call(["terminal", "show", "--terminal", handle]);
+        if (response._meta.runtimeId !== listed._meta.runtimeId) throw new Error("Orca restarted during pane recovery. No input was sent.");
+      }
       const { terminal } = z.object({ terminal: terminalSchema }).parse(response.result);
-      if (terminal.handle !== owner.terminalHandle || terminal.agentIdentity !== "codex" || !isOrcaAgent(terminal)) {
+      if (terminal.handle !== handle || terminal.agentIdentity !== "codex" || !isOrcaAgent(terminal)) {
         throw new Error("The Orca terminal owning this session is unavailable. No input was forwarded.");
       }
       return { ...terminal, runtimeId: response._meta.runtimeId, processKey: owner.processKey };
